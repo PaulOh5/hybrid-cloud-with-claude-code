@@ -10,6 +10,7 @@ import (
 	"net/netip"
 
 	uuid "github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const createInstance = `-- name: CreateInstance :one
@@ -208,10 +209,10 @@ func (q *Queries) ListInstances(ctx context.Context, ownerID uuid.NullUUID) ([]I
 
 const updateInstanceState = `-- name: UpdateInstanceState :one
 update instances
-set state         = $2,
-    error_message = coalesce($3, error_message),
-    vm_internal_ip = coalesce($4, vm_internal_ip),
-    updated_at    = now()
+set state          = $2,
+    error_message  = coalesce($3::text, error_message),
+    vm_internal_ip = coalesce($4::inet, vm_internal_ip),
+    updated_at     = now()
 where id = $1
 returning id, owner_id, node_id, name, state, memory_mb, vcpus, gpu_count, slot_indices, ssh_pubkeys, vm_internal_ip, image_ref, error_message, created_at, updated_at
 `
@@ -219,7 +220,7 @@ returning id, owner_id, node_id, name, state, memory_mb, vcpus, gpu_count, slot_
 type UpdateInstanceStateParams struct {
 	ID           uuid.UUID     `json:"id"`
 	State        InstanceState `json:"state"`
-	ErrorMessage string        `json:"error_message"`
+	ErrorMessage pgtype.Text   `json:"error_message"`
 	VmInternalIp *netip.Addr   `json:"vm_internal_ip"`
 }
 

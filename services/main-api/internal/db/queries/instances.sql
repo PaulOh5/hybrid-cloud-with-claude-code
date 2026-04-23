@@ -20,10 +20,10 @@ order by created_at desc;
 
 -- name: UpdateInstanceState :one
 update instances
-set state         = $2,
-    error_message = coalesce($3, error_message),
-    vm_internal_ip = coalesce($4, vm_internal_ip),
-    updated_at    = now()
+set state          = $2,
+    error_message  = coalesce(sqlc.narg('error_message')::text, error_message),
+    vm_internal_ip = coalesce(sqlc.narg('vm_internal_ip')::inet, vm_internal_ip),
+    updated_at     = now()
 where id = $1
 returning *;
 
