@@ -7,24 +7,36 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net/netip"
 	"time"
 
 	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"hybridcloud/services/main-api/internal/db/dbstore"
+	"hybridcloud/services/main-api/internal/instance"
 	"hybridcloud/services/main-api/internal/node"
 	agentv1 "hybridcloud/shared/proto/agent/v1"
 )
+
+// InstanceUpdater is the narrow slice of instance.Repo the stream uses to
+// react to agent-reported status changes.
+type InstanceUpdater interface {
+	Transition(ctx context.Context, id uuid.UUID, to instance.State, opts instance.TransitionOptions) (dbstore.Instance, error)
+}
 
 // AgentStreamService serves AgentService/Stream.
 type AgentStreamService struct {
 	agentv1.UnimplementedAgentServiceServer
 
 	Nodes             node.Repo
+	Instances         InstanceUpdater
+	Registry          *AgentRegistry
 	ExpectedToken     string
 	DefaultZoneID     uuid.UUID
 	HeartbeatInterval time.Duration
+	SendBuffer        int
 	Clock             func() time.Time
 	Log               *slog.Logger
 }
@@ -82,6 +94,40 @@ func (s *AgentStreamService) Stream(stream agentv1.AgentService_StreamServer) er
 		"elapsed_ms", time.Since(now).Milliseconds(),
 	)
 
+	// Register a send channel so the REST layer can push ControlMessages.
+	var cleanupRegistry func()
+	sendCh := make(chan *agentv1.ControlMessage, s.sendBuffer())
+	if s.Registry != nil {
+		cleanupRegistry = s.Registry.Register(n.ID, sendCh)
+	} else {
+		cleanupRegistry = func() {}
+	}
+	defer cleanupRegistry()
+
+	// Pump outgoing ControlMessages on a goroutine so receive and send are
+	// independent — a slow Send must not block Recv.
+	sendErrCh := make(chan error, 1)
+	go func() {
+		sendErrCh <- s.sendLoop(ctx, stream, sendCh)
+	}()
+
+	recvErr := s.receiveLoop(ctx, stream, n.ID)
+
+	// Closing the send channel signals sendLoop to exit after draining.
+	close(sendCh)
+	sendErr := <-sendErrCh
+
+	if recvErr != nil {
+		return recvErr
+	}
+	return sendErr
+}
+
+func (s *AgentStreamService) receiveLoop(
+	ctx context.Context,
+	stream agentv1.AgentService_StreamServer,
+	nodeID uuid.UUID,
+) error {
 	for {
 		msg, err := stream.Recv()
 		if err != nil {
@@ -94,8 +140,28 @@ func (s *AgentStreamService) Stream(stream agentv1.AgentService_StreamServer) er
 			return err
 		}
 
-		if err := s.handleAgentMessage(ctx, n.ID, msg); err != nil {
-			s.log().Warn("agent message handler error", "err", err, "node_id", n.ID)
+		if err := s.handleAgentMessage(ctx, nodeID, msg); err != nil {
+			s.log().Warn("agent message handler error", "err", err, "node_id", nodeID)
+		}
+	}
+}
+
+func (s *AgentStreamService) sendLoop(
+	ctx context.Context,
+	stream agentv1.AgentService_StreamServer,
+	ch <-chan *agentv1.ControlMessage,
+) error {
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case msg, ok := <-ch:
+			if !ok {
+				return nil
+			}
+			if err := stream.Send(msg); err != nil {
+				return err
+			}
 		}
 	}
 }
@@ -112,9 +178,7 @@ func (s *AgentStreamService) handleAgentMessage(ctx context.Context, nodeID uuid
 		}
 		return s.Nodes.UpdateTopology(ctx, nodeID, raw)
 	case *agentv1.AgentMessage_InstanceStatus:
-		// Instance status is wired in Phase 3; log and drop in Phase 2.
-		s.log().Debug("instance status received (phase 2 ignores)", "instance_id", p.InstanceStatus.InstanceId)
-		return nil
+		return s.applyInstanceStatus(ctx, p.InstanceStatus)
 	case *agentv1.AgentMessage_Ack:
 		return nil
 	case *agentv1.AgentMessage_Register:
@@ -122,6 +186,43 @@ func (s *AgentStreamService) handleAgentMessage(ctx context.Context, nodeID uuid
 	default:
 		return status.Errorf(codes.InvalidArgument, "unknown AgentMessage payload %T", p)
 	}
+}
+
+// applyInstanceStatus transitions the instance row to match what the agent
+// reports. When Instances is nil (tests that don't care about lifecycle) the
+// status is logged and dropped.
+func (s *AgentStreamService) applyInstanceStatus(ctx context.Context, st *agentv1.InstanceStatus) error {
+	if s.Instances == nil {
+		s.log().Debug("instance status received (no updater)", "instance_id", st.InstanceId)
+		return nil
+	}
+	id, err := uuid.Parse(st.InstanceId)
+	if err != nil {
+		return err
+	}
+	to, err := mapInstanceState(st.State)
+	if err != nil {
+		return err
+	}
+
+	opts := instance.TransitionOptions{
+		Reason: "agent_report",
+	}
+	if st.ErrorMessage != "" {
+		opts.ErrorMessage = st.ErrorMessage
+	}
+	if st.VmInternalIp != "" {
+		if addr, err := netip.ParseAddr(st.VmInternalIp); err == nil {
+			opts.VMInternalIP = addr
+		}
+	}
+	_, err = s.Instances.Transition(ctx, id, to, opts)
+	if err != nil && !errors.Is(err, instance.ErrInvalidTransition) {
+		// Invalid transitions happen when the agent reports an old state we
+		// have already advanced past; log and swallow.
+		return err
+	}
+	return nil
 }
 
 // StaleSweeper runs MarkStaleOffline on an interval. It exits when ctx is
@@ -163,6 +264,13 @@ func (s *AgentStreamService) heartbeatInterval() time.Duration {
 	return 15 * time.Second
 }
 
+func (s *AgentStreamService) sendBuffer() int {
+	if s.SendBuffer > 0 {
+		return s.SendBuffer
+	}
+	return 16
+}
+
 func (s *AgentStreamService) log() *slog.Logger {
 	if s.Log != nil {
 		return s.Log
@@ -177,6 +285,23 @@ func marshalTopology(t *agentv1.Topology) ([]byte, error) {
 	if t == nil {
 		return []byte("{}"), nil
 	}
-	// Use protobuf-JSON so future viewers can decode back to the message.
 	return protojsonMarshal(t)
+}
+
+// mapInstanceState translates the proto enum to the DB enum used by the Repo.
+func mapInstanceState(s agentv1.InstanceState) (instance.State, error) {
+	switch s {
+	case agentv1.InstanceState_INSTANCE_STATE_PROVISIONING:
+		return instance.StateProvisioning, nil
+	case agentv1.InstanceState_INSTANCE_STATE_RUNNING:
+		return instance.StateRunning, nil
+	case agentv1.InstanceState_INSTANCE_STATE_STOPPING:
+		return instance.StateStopping, nil
+	case agentv1.InstanceState_INSTANCE_STATE_STOPPED:
+		return instance.StateStopped, nil
+	case agentv1.InstanceState_INSTANCE_STATE_FAILED:
+		return instance.StateFailed, nil
+	default:
+		return "", errors.New("unknown instance state")
+	}
 }

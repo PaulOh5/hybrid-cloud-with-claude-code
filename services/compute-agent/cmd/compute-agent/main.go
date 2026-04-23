@@ -1,6 +1,5 @@
-// compute-agent connects to main-api, registers the GPU node, and pumps
-// heartbeats. In Phase 2 this is all it does; Phase 3 wires CreateInstance /
-// DestroyInstance control messages to the libvirt manager.
+// compute-agent connects to main-api, registers the GPU node, and executes
+// CreateInstance/DestroyInstance control messages via libvirt + cloud-init.
 package main
 
 import (
@@ -11,8 +10,11 @@ import (
 	"os/signal"
 	"syscall"
 
+	"hybridcloud/services/compute-agent/internal/libvirt"
 	"hybridcloud/services/compute-agent/internal/stream"
 	"hybridcloud/services/compute-agent/internal/topology"
+	"hybridcloud/services/compute-agent/internal/vm"
+	agentv1 "hybridcloud/shared/proto/agent/v1"
 )
 
 func main() {
@@ -20,8 +22,13 @@ func main() {
 		endpoint     = flag.String("endpoint", env("AGENT_API_ENDPOINT", "localhost:8081"), "main-api gRPC endpoint")
 		nodeName     = flag.String("node-name", env("AGENT_NODE_NAME", ""), "stable node name")
 		token        = flag.String("agent-token", env("AGENT_API_TOKEN", ""), "shared secret for main-api")
-		agentVersion = flag.String("agent-version", "0.1.0", "agent build version reported on Register")
-		fakeTopology = flag.Bool("fake-topology", env("AGENT_FAKE_TOPOLOGY", "") == "1", "skip nvidia-smi and report no gpus (useful on dev boxes)")
+		agentVersion = flag.String("agent-version", "0.1.0", "agent build version")
+		fakeTopology = flag.Bool("fake-topology", env("AGENT_FAKE_TOPOLOGY", "") == "1", "report empty topology")
+		disableVMs   = flag.Bool("disable-vms", env("AGENT_DISABLE_VMS", "") == "1", "skip libvirt wiring (control-plane-only mode)")
+		imageDir     = flag.String("image-dir", env("AGENT_IMAGE_DIR", "/var/lib/hybrid/images"), "per-VM qcow2 directory")
+		seedDir      = flag.String("seed-dir", env("AGENT_SEED_DIR", "/var/lib/hybrid/seeds"), "cloud-init ISO directory")
+		baseImage    = flag.String("base-image", env("AGENT_BASE_IMAGE", ""), "backing qcow2 for new VM disks")
+		netName      = flag.String("network", env("AGENT_LIBVIRT_NETWORK", "default"), "libvirt network to attach VMs to")
 	)
 	flag.Parse()
 
@@ -46,6 +53,26 @@ func main() {
 		collector = topology.LinuxCollector{}
 	}
 
+	var onControl func(ctx context.Context, m *agentv1.ControlMessage, send func(*agentv1.AgentMessage))
+	if *disableVMs {
+		log.Warn("VM handling disabled — control messages will be ignored")
+	} else {
+		mgr, err := libvirt.NewLibvirtManager(log)
+		if err != nil {
+			log.Error("libvirt connect failed", "err", err)
+			os.Exit(1)
+		}
+		defer func() { _ = mgr.Close() }()
+
+		h := vm.New(mgr, vm.Config{
+			ImageDir:    *imageDir,
+			SeedDir:     *seedDir,
+			BaseImage:   *baseImage,
+			NetworkName: *netName,
+		}, log)
+		onControl = h.OnControl
+	}
+
 	client, err := stream.New(stream.Config{
 		Endpoint:     *endpoint,
 		NodeName:     *nodeName,
@@ -53,6 +80,7 @@ func main() {
 		AgentVersion: *agentVersion,
 		AgentToken:   *token,
 		Topology:     collector,
+		OnControl:    onControl,
 		Log:          log,
 	})
 	if err != nil {
@@ -63,7 +91,7 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	log.Info("compute-agent starting", "endpoint", *endpoint, "node_name", *nodeName)
+	log.Info("compute-agent starting", "endpoint", *endpoint, "node_name", *nodeName, "vms_disabled", *disableVMs)
 
 	if err := client.Run(ctx); err != nil && err != context.Canceled {
 		log.Error("agent exited", "err", err)

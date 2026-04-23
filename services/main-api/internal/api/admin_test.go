@@ -71,7 +71,7 @@ func TestListNodes_OK(t *testing.T) {
 	}
 
 	h := &api.AdminHandlers{Nodes: repo}
-	router := api.NewAdminRouter(h, "tok")
+	router := api.NewAdminRouter(h, nil, "tok")
 
 	req := httptest.NewRequest(http.MethodGet, "/admin/nodes", nil)
 	req.Header.Set("Authorization", "Bearer tok")
@@ -103,7 +103,7 @@ func TestListNodes_OK(t *testing.T) {
 func TestListNodes_MissingToken(t *testing.T) {
 	t.Parallel()
 
-	router := api.NewAdminRouter(&api.AdminHandlers{Nodes: &fakeRepo{}}, "tok")
+	router := api.NewAdminRouter(&api.AdminHandlers{Nodes: &fakeRepo{}}, nil, "tok")
 	req := httptest.NewRequest(http.MethodGet, "/admin/nodes", nil)
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
@@ -116,7 +116,7 @@ func TestListNodes_MissingToken(t *testing.T) {
 func TestListNodes_WrongToken(t *testing.T) {
 	t.Parallel()
 
-	router := api.NewAdminRouter(&api.AdminHandlers{Nodes: &fakeRepo{}}, "tok")
+	router := api.NewAdminRouter(&api.AdminHandlers{Nodes: &fakeRepo{}}, nil, "tok")
 	req := httptest.NewRequest(http.MethodGet, "/admin/nodes", nil)
 	req.Header.Set("Authorization", "Bearer nope")
 	rr := httptest.NewRecorder()
@@ -139,7 +139,7 @@ func TestListNodes_EmptyTopologyJSON(t *testing.T) {
 			RegisteredAt: pgtype.Timestamptz{Time: time.Now(), Valid: true},
 		}},
 	}
-	router := api.NewAdminRouter(&api.AdminHandlers{Nodes: repo}, "tok")
+	router := api.NewAdminRouter(&api.AdminHandlers{Nodes: repo}, nil, "tok")
 	req := httptest.NewRequest(http.MethodGet, "/admin/nodes", nil)
 	req.Header.Set("Authorization", "Bearer tok")
 	rr := httptest.NewRecorder()

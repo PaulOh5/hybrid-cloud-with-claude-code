@@ -27,6 +27,7 @@ import (
 	"hybridcloud/services/main-api/internal/db/dbstore"
 	"hybridcloud/services/main-api/internal/db/migrations"
 	grpcsrv "hybridcloud/services/main-api/internal/grpc"
+	"hybridcloud/services/main-api/internal/instance"
 	"hybridcloud/services/main-api/internal/node"
 	agentv1 "hybridcloud/shared/proto/agent/v1"
 )
@@ -57,15 +58,20 @@ func main() {
 	defer pool.Close()
 
 	queries := dbstore.New(pool)
-	repo := node.NewDBRepo(queries)
-	zoneID, err := repo.DefaultZoneID(ctx)
+	nodes := node.NewDBRepo(queries)
+	instances := instance.NewRepo(pool, queries)
+
+	zoneID, err := nodes.DefaultZoneID(ctx)
 	if err != nil {
 		log.Error("default zone", "err", err)
 		os.Exit(1)
 	}
 
+	registry := grpcsrv.NewAgentRegistry()
 	agentSvc := &grpcsrv.AgentStreamService{
-		Nodes:         repo,
+		Nodes:         nodes,
+		Instances:     instances,
+		Registry:      registry,
 		ExpectedToken: cfg.AgentToken,
 		DefaultZoneID: zoneID,
 		Log:           log,
@@ -91,7 +97,11 @@ func main() {
 	}()
 
 	// HTTP server.
-	adminRouter := api.NewAdminRouter(&api.AdminHandlers{Nodes: repo}, cfg.AdminToken)
+	adminRouter := api.NewAdminRouter(
+		&api.AdminHandlers{Nodes: nodes},
+		&api.InstanceHandlers{Instances: instances, Nodes: nodes, Dispatcher: registry},
+		cfg.AdminToken,
+	)
 	httpServer := &http.Server{
 		Addr:              cfg.HTTPAddr,
 		Handler:           adminRouter,

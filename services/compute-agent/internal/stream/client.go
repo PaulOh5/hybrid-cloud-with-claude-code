@@ -42,9 +42,9 @@ type Config struct {
 	MaxBackoff     time.Duration
 
 	// OnControl is invoked for each ControlMessage that arrives during a live
-	// session. Phase 2 registers a no-op handler; Phase 3 wires it to the
-	// instance lifecycle.
-	OnControl func(*agentv1.ControlMessage)
+	// session. Handlers may enqueue responses through send, which serialises
+	// writes back to main-api via the session's single send goroutine.
+	OnControl func(ctx context.Context, msg *agentv1.ControlMessage, send func(*agentv1.AgentMessage))
 
 	Log *slog.Logger
 }
@@ -82,7 +82,7 @@ func New(cfg Config) (*Client, error) {
 		cfg.Dialer = defaultDialer
 	}
 	if cfg.OnControl == nil {
-		cfg.OnControl = func(*agentv1.ControlMessage) {}
+		cfg.OnControl = func(context.Context, *agentv1.ControlMessage, func(*agentv1.AgentMessage)) {}
 	}
 	return &Client{cfg: cfg}, nil
 }
@@ -163,28 +163,57 @@ func (c *Client) runOnce(ctx context.Context) error {
 		interval = 15 * time.Second
 	}
 
-	// Pump heartbeats and incoming control messages concurrently. First error
-	// from either side terminates the session.
-	errCh := make(chan error, 2)
+	// Serialise all writes to the stream through outCh so OnControl handlers
+	// and the heartbeat ticker never call stream.Send concurrently.
+	outCh := make(chan *agentv1.AgentMessage, 16)
+	sessionCtx, cancelSession := context.WithCancel(ctx)
+	defer cancelSession()
 
-	go func() {
-		errCh <- c.sendHeartbeats(ctx, stream, ra.NodeId, interval)
-	}()
-	go func() {
-		errCh <- c.readControl(stream)
-	}()
+	sendFn := func(m *agentv1.AgentMessage) {
+		select {
+		case outCh <- m:
+		case <-sessionCtx.Done():
+		}
+	}
+
+	errCh := make(chan error, 3)
+	go func() { errCh <- c.sendLoop(sessionCtx, stream, outCh) }()
+	go func() { errCh <- c.heartbeatTicker(sessionCtx, ra.NodeId, interval, sendFn) }()
+	go func() { errCh <- c.readControl(sessionCtx, stream, sendFn) }()
 
 	err = <-errCh
-	// Best-effort close to release the other goroutine.
+	cancelSession()
 	_ = stream.CloseSend()
 	return err
 }
 
-func (c *Client) sendHeartbeats(
+// sendLoop fan-ins messages from both the heartbeat ticker and OnControl
+// handlers onto stream.Send. Exits on ctx cancellation or stream error.
+func (c *Client) sendLoop(
 	ctx context.Context,
 	stream agentv1.AgentService_StreamClient,
+	out <-chan *agentv1.AgentMessage,
+) error {
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case msg, ok := <-out:
+			if !ok {
+				return nil
+			}
+			if err := stream.Send(msg); err != nil {
+				return fmt.Errorf("send: %w", err)
+			}
+		}
+	}
+}
+
+func (c *Client) heartbeatTicker(
+	ctx context.Context,
 	nodeID string,
 	interval time.Duration,
+	send func(*agentv1.AgentMessage),
 ) error {
 	t := time.NewTicker(interval)
 	defer t.Stop()
@@ -193,21 +222,23 @@ func (c *Client) sendHeartbeats(
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-t.C:
-			if err := stream.Send(&agentv1.AgentMessage{
+			send(&agentv1.AgentMessage{
 				Payload: &agentv1.AgentMessage_Heartbeat{
 					Heartbeat: &agentv1.Heartbeat{
 						NodeId: nodeID,
 						SentAt: timestamppb.Now(),
 					},
 				},
-			}); err != nil {
-				return fmt.Errorf("send heartbeat: %w", err)
-			}
+			})
 		}
 	}
 }
 
-func (c *Client) readControl(stream agentv1.AgentService_StreamClient) error {
+func (c *Client) readControl(
+	ctx context.Context,
+	stream agentv1.AgentService_StreamClient,
+	send func(*agentv1.AgentMessage),
+) error {
 	for {
 		msg, err := stream.Recv()
 		if err != nil {
@@ -216,7 +247,7 @@ func (c *Client) readControl(stream agentv1.AgentService_StreamClient) error {
 			}
 			return err
 		}
-		c.cfg.OnControl(msg)
+		c.cfg.OnControl(ctx, msg, send)
 	}
 }
 
