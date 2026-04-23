@@ -1,0 +1,48 @@
+# Go
+*.test
+*.out
+/bin/
+/dist/
+coverage.out
+coverage.html
+
+# Service binaries produced by `go build`
+/compute-agent
+/main-api
+/ssh-proxy
+services/*/compute-agent
+services/*/main-api
+services/*/ssh-proxy
+
+# Node
+node_modules/
+.next/
+.turbo/
+.pnpm-store/
+out/
+
+# Env
+.env
+.env.local
+.env.*.local
+
+# IDE
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Local dev
+/tmp/
+/var/
+*.sqlite
+*.db

@@ -1,0 +1,7 @@
+go 1.24
+
+use (
+	./services/compute-agent
+	./services/main-api
+	./services/ssh-proxy
+)
