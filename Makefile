@@ -4,7 +4,7 @@ GO_SERVICES := ./services/compute-agent/... ./services/main-api/... ./services/s
 FRONTEND_DIR := web/frontend
 GOBIN := $(shell go env GOPATH)/bin
 DATABASE_URL ?= postgres://hybrid:hybrid@localhost:5432/hybrid?sslmode=disable
-MIGRATIONS_DIR := services/main-api/db/migrations
+MIGRATIONS_DIR := services/main-api/internal/db/migrations
 
 help: ## Show this help
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z_-]+:.*##/ { printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
