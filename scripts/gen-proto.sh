@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
 # Regenerate Go protobuf stubs from proto/*.proto.
-# Requires: protoc, protoc-gen-go, protoc-gen-go-grpc on PATH (or $GOPATH/bin).
+# Output goes to shared/proto/<package>/<version> (per go_package option).
+# Requires protoc + protoc-gen-go + protoc-gen-go-grpc on PATH.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-OUT_DIR="$ROOT/shared/proto"
-
-mkdir -p "$OUT_DIR"
+export PATH="$(go env GOPATH)/bin:$PATH"
 
 PROTOS=("$ROOT"/proto/*.proto)
 if [[ ! -e "${PROTOS[0]}" ]]; then
@@ -14,12 +13,14 @@ if [[ ! -e "${PROTOS[0]}" ]]; then
   exit 0
 fi
 
-export PATH="$(go env GOPATH)/bin:$PATH"
+mkdir -p "$ROOT/shared"
 
 protoc \
   --proto_path="$ROOT/proto" \
-  --go_out="$OUT_DIR" --go_opt=paths=source_relative \
-  --go-grpc_out="$OUT_DIR" --go-grpc_opt=paths=source_relative \
+  --go_out="$ROOT/shared" \
+  --go_opt=module=hybridcloud/shared \
+  --go-grpc_out="$ROOT/shared" \
+  --go-grpc_opt=module=hybridcloud/shared \
   "${PROTOS[@]}"
 
-echo "generated $(ls "$OUT_DIR"/*.go | wc -l) Go files in $OUT_DIR"
+echo "generated Go stubs in $ROOT/shared/proto/"

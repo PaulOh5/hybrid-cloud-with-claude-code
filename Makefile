@@ -1,6 +1,6 @@
 .PHONY: help dev build test lint proto migrate-up migrate-down migrate-reset e2e fmt clean tidy dev-db dev-db-down
 
-GO_SERVICES := ./services/compute-agent/... ./services/main-api/... ./services/ssh-proxy/...
+GO_SERVICES := ./services/compute-agent/... ./services/main-api/... ./services/ssh-proxy/... ./shared/...
 FRONTEND_DIR := web/frontend
 GOBIN := $(shell go env GOPATH)/bin
 DATABASE_URL ?= postgres://hybrid:hybrid@localhost:5432/hybrid?sslmode=disable

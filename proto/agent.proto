@@ -1,0 +1,131 @@
+syntax = "proto3";
+
+package hybridcloud.agent.v1;
+
+option go_package = "hybridcloud/shared/proto/agent/v1;agentv1";
+
+import "google/protobuf/timestamp.proto";
+
+// AgentService is the bidirectional stream between a compute-agent running on
+// a GPU node and the main-api. The agent opens the stream (outbound from the
+// node) so that Phase 2 private-network agents can reach us through NAT.
+service AgentService {
+  rpc Stream(stream AgentMessage) returns (stream ControlMessage);
+}
+
+// --- Agent → API -----------------------------------------------------------
+
+message AgentMessage {
+  oneof payload {
+    Register register = 1;
+    Heartbeat heartbeat = 2;
+    Topology topology = 3;
+    InstanceStatus instance_status = 4;
+    Ack ack = 5;
+  }
+}
+
+message Register {
+  string node_name = 1;
+  string hostname = 2;
+  string agent_version = 3;
+  // Auth token proving the agent may register under this node_name.
+  string agent_token = 4;
+  Topology topology = 5;
+}
+
+message Heartbeat {
+  string node_id = 1;
+  google.protobuf.Timestamp sent_at = 2;
+  int32 active_instance_count = 3;
+  double cpu_load_1m = 4;
+  uint64 mem_free_bytes = 5;
+}
+
+// Topology is the physical layout of GPU resources on the node. Reported at
+// register time and again whenever the agent detects a change (e.g. a GPU
+// dropped off the PCI bus).
+message Topology {
+  repeated Gpu gpus = 1;
+  repeated NvlinkPair nvlink_pairs = 2;
+  bool iommu_enabled = 3;
+}
+
+message Gpu {
+  int32 index = 1;              // 0..N-1 stable across reboots
+  string pci_address = 2;       // e.g. "0000:81:00.0"
+  string model = 3;             // e.g. "NVIDIA RTX A6000"
+  uint64 memory_bytes = 4;
+  string iommu_group = 5;
+  // "host" when bound to nvidia/amdgpu; "vfio-pci" when ready for passthrough;
+  // "unknown" for unrecognised drivers.
+  string driver = 6;
+}
+
+message NvlinkPair {
+  int32 gpu_a_index = 1;
+  int32 gpu_b_index = 2;
+}
+
+// InstanceStatus is emitted when the agent transitions an instance's lifecycle
+// state, including failures.
+message InstanceStatus {
+  string instance_id = 1;
+  InstanceState state = 2;
+  string vm_internal_ip = 3;
+  string error_message = 4;
+  google.protobuf.Timestamp observed_at = 5;
+}
+
+enum InstanceState {
+  INSTANCE_STATE_UNSPECIFIED = 0;
+  INSTANCE_STATE_PROVISIONING = 1;
+  INSTANCE_STATE_RUNNING = 2;
+  INSTANCE_STATE_STOPPING = 3;
+  INSTANCE_STATE_STOPPED = 4;
+  INSTANCE_STATE_FAILED = 5;
+}
+
+// --- API → Agent -----------------------------------------------------------
+
+message ControlMessage {
+  oneof payload {
+    RegisterAck register_ack = 1;
+    CreateInstance create_instance = 2;
+    DestroyInstance destroy_instance = 3;
+    Ping ping = 4;
+  }
+}
+
+message RegisterAck {
+  string node_id = 1;           // persisted UUID
+  int32 heartbeat_interval_seconds = 2;
+}
+
+message CreateInstance {
+  string instance_id = 1;       // UUID assigned by main-api
+  string name = 2;
+  uint32 memory_mb = 3;
+  uint32 vcpus = 4;
+  // SSH public keys to inject into the guest via cloud-init.
+  repeated string ssh_pubkeys = 5;
+  // GPU slot indices on this node that the instance should own. Empty means
+  // no passthrough (Phase 3 default).
+  repeated int32 slot_indices = 6;
+  // Cloud image to boot. Empty means agent's configured default.
+  string image_ref = 7;
+}
+
+message DestroyInstance {
+  string instance_id = 1;
+}
+
+message Ping {
+  google.protobuf.Timestamp sent_at = 1;
+}
+
+message Ack {
+  string correlation_id = 1;
+  bool ok = 2;
+  string error_message = 3;
+}

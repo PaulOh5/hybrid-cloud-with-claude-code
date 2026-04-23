@@ -1,7 +1,8 @@
-go 1.24
+go 1.24.0
 
 use (
 	./services/compute-agent
 	./services/main-api
 	./services/ssh-proxy
+	./shared
 )
