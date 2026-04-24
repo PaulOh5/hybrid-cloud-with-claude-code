@@ -435,7 +435,16 @@ type Gpu struct {
 	IommuGroup  string                 `protobuf:"bytes,5,opt,name=iommu_group,json=iommuGroup,proto3" json:"iommu_group,omitempty"`
 	// "host" when bound to nvidia/amdgpu; "vfio-pci" when ready for passthrough;
 	// "unknown" for unrecognised drivers.
-	Driver        string `protobuf:"bytes,6,opt,name=driver,proto3" json:"driver,omitempty"`
+	Driver string `protobuf:"bytes,6,opt,name=driver,proto3" json:"driver,omitempty"`
+	// PCI addresses of companion devices (HDMI audio, on-card USB) in the same
+	// IOMMU group — must be passed through together with the GPU.
+	CompanionPciAddresses []string `protobuf:"bytes,7,rep,name=companion_pci_addresses,json=companionPciAddresses,proto3" json:"companion_pci_addresses,omitempty"`
+	// True when the GPU and every companion in its IOMMU group are bound to
+	// vfio-pci, so main-api may schedule a passthrough VM onto this slot.
+	VfioReady bool `protobuf:"varint,8,opt,name=vfio_ready,json=vfioReady,proto3" json:"vfio_ready,omitempty"`
+	// Human-readable reason when the GPU cannot be bound (non-empty only when
+	// vfio_ready=false). Surface in operator dashboards.
+	BindBlocker   string `protobuf:"bytes,9,opt,name=bind_blocker,json=bindBlocker,proto3" json:"bind_blocker,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -508,6 +517,27 @@ func (x *Gpu) GetIommuGroup() string {
 func (x *Gpu) GetDriver() string {
 	if x != nil {
 		return x.Driver
+	}
+	return ""
+}
+
+func (x *Gpu) GetCompanionPciAddresses() []string {
+	if x != nil {
+		return x.CompanionPciAddresses
+	}
+	return nil
+}
+
+func (x *Gpu) GetVfioReady() bool {
+	if x != nil {
+		return x.VfioReady
+	}
+	return false
+}
+
+func (x *Gpu) GetBindBlocker() string {
+	if x != nil {
+		return x.BindBlocker
 	}
 	return ""
 }
@@ -1080,7 +1110,7 @@ const file_agent_proto_rawDesc = "" +
 	"\bTopology\x12-\n" +
 	"\x04gpus\x18\x01 \x03(\v2\x19.hybridcloud.agent.v1.GpuR\x04gpus\x12C\n" +
 	"\fnvlink_pairs\x18\x02 \x03(\v2 .hybridcloud.agent.v1.NvlinkPairR\vnvlinkPairs\x12#\n" +
-	"\riommu_enabled\x18\x03 \x01(\bR\fiommuEnabled\"\xae\x01\n" +
+	"\riommu_enabled\x18\x03 \x01(\bR\fiommuEnabled\"\xa8\x02\n" +
 	"\x03Gpu\x12\x14\n" +
 	"\x05index\x18\x01 \x01(\x05R\x05index\x12\x1f\n" +
 	"\vpci_address\x18\x02 \x01(\tR\n" +
@@ -1089,7 +1119,11 @@ const file_agent_proto_rawDesc = "" +
 	"\fmemory_bytes\x18\x04 \x01(\x04R\vmemoryBytes\x12\x1f\n" +
 	"\viommu_group\x18\x05 \x01(\tR\n" +
 	"iommuGroup\x12\x16\n" +
-	"\x06driver\x18\x06 \x01(\tR\x06driver\"L\n" +
+	"\x06driver\x18\x06 \x01(\tR\x06driver\x126\n" +
+	"\x17companion_pci_addresses\x18\a \x03(\tR\x15companionPciAddresses\x12\x1d\n" +
+	"\n" +
+	"vfio_ready\x18\b \x01(\bR\tvfioReady\x12!\n" +
+	"\fbind_blocker\x18\t \x01(\tR\vbindBlocker\"L\n" +
 	"\n" +
 	"NvlinkPair\x12\x1e\n" +
 	"\vgpu_a_index\x18\x01 \x01(\x05R\tgpuAIndex\x12\x1e\n" +

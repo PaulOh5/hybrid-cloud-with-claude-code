@@ -60,6 +60,15 @@ message Gpu {
   // "host" when bound to nvidia/amdgpu; "vfio-pci" when ready for passthrough;
   // "unknown" for unrecognised drivers.
   string driver = 6;
+  // PCI addresses of companion devices (HDMI audio, on-card USB) in the same
+  // IOMMU group — must be passed through together with the GPU.
+  repeated string companion_pci_addresses = 7;
+  // True when the GPU and every companion in its IOMMU group are bound to
+  // vfio-pci, so main-api may schedule a passthrough VM onto this slot.
+  bool vfio_ready = 8;
+  // Human-readable reason when the GPU cannot be bound (non-empty only when
+  // vfio_ready=false). Surface in operator dashboards.
+  string bind_blocker = 9;
 }
 
 message NvlinkPair {

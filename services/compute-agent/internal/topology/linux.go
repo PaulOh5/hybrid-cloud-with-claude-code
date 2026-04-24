@@ -4,11 +4,10 @@ import (
 	"context"
 	"encoding/xml"
 	"fmt"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 
+	"hybridcloud/services/compute-agent/internal/gpu"
 	agentv1 "hybridcloud/shared/proto/agent/v1"
 )
 
@@ -18,18 +17,20 @@ import (
 type LinuxCollector struct {
 	// NvidiaSmiPath overrides the command path; zero value uses PATH lookup.
 	NvidiaSmiPath string
-	// IOMMURoot overrides /sys/kernel/iommu_groups for tests.
-	IOMMURoot string
+	// SysfsRoot overrides /sys for tests. Empty uses the real kernel root.
+	SysfsRoot string
 }
 
 // Collect satisfies Collector.
 func (c LinuxCollector) Collect(ctx context.Context) (*agentv1.Topology, error) {
+	sysfs := gpu.Sysfs{Root: c.SysfsRoot}
+
 	smi := c.NvidiaSmiPath
 	if smi == "" {
 		smi = "nvidia-smi"
 	}
 	if _, err := exec.LookPath(smi); err != nil {
-		return &agentv1.Topology{IommuEnabled: c.iommuEnabled()}, nil
+		return &agentv1.Topology{IommuEnabled: sysfs.IOMMUEnabled()}, nil
 	}
 
 	cmd := exec.CommandContext(ctx, smi, "-q", "-x")
@@ -45,16 +46,31 @@ func (c LinuxCollector) Collect(ctx context.Context) (*agentv1.Topology, error) 
 
 	top := &agentv1.Topology{
 		Gpus:         gpus,
-		IommuEnabled: c.iommuEnabled(),
+		IommuEnabled: sysfs.IOMMUEnabled(),
 	}
 
-	// Best-effort: populate iommu_group and current driver from sysfs.
 	for _, g := range top.Gpus {
 		if g.PciAddress == "" {
 			continue
 		}
-		g.IommuGroup = iommuGroup(g.PciAddress)
-		g.Driver = pciDriver(g.PciAddress)
+		if grp, err := sysfs.IOMMUGroup(g.PciAddress); err == nil {
+			g.IommuGroup = grp
+		}
+		if drv, err := sysfs.CurrentDriver(g.PciAddress); err == nil {
+			g.Driver = drv
+		}
+		if companions, err := sysfs.Companions(g.PciAddress); err == nil {
+			g.CompanionPciAddresses = companions
+		}
+		ok, reason, err := sysfs.DiagnoseBindability(g.PciAddress)
+		if err == nil {
+			g.VfioReady, _ = sysfs.VFIOReady(g.PciAddress)
+			if !ok {
+				g.BindBlocker = reason
+			} else if !g.VfioReady {
+				g.BindBlocker = "host drivers hold the group — run scripts/node-bootstrap.sh"
+			}
+		}
 	}
 	return top, nil
 }
@@ -121,32 +137,4 @@ func parseMemMiB(s string) uint64 {
 	default:
 		return 0
 	}
-}
-
-func (c LinuxCollector) iommuEnabled() bool {
-	root := c.IOMMURoot
-	if root == "" {
-		root = "/sys/kernel/iommu_groups"
-	}
-	entries, err := os.ReadDir(root)
-	if err != nil {
-		return false
-	}
-	return len(entries) > 0
-}
-
-func iommuGroup(pci string) string {
-	link, err := os.Readlink(filepath.Join("/sys/bus/pci/devices", pci, "iommu_group"))
-	if err != nil {
-		return ""
-	}
-	return filepath.Base(link)
-}
-
-func pciDriver(pci string) string {
-	link, err := os.Readlink(filepath.Join("/sys/bus/pci/devices", pci, "driver"))
-	if err != nil {
-		return "unknown"
-	}
-	return filepath.Base(link)
 }
