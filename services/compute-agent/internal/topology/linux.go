@@ -25,23 +25,13 @@ type LinuxCollector struct {
 func (c LinuxCollector) Collect(ctx context.Context) (*agentv1.Topology, error) {
 	sysfs := gpu.Sysfs{Root: c.SysfsRoot}
 
-	smi := c.NvidiaSmiPath
-	if smi == "" {
-		smi = "nvidia-smi"
-	}
-	if _, err := exec.LookPath(smi); err != nil {
-		return &agentv1.Topology{IommuEnabled: sysfs.IOMMUEnabled()}, nil
-	}
-
-	cmd := exec.CommandContext(ctx, smi, "-q", "-x")
-	out, err := cmd.Output()
-	if err != nil {
-		return nil, fmt.Errorf("nvidia-smi -q -x: %w", err)
-	}
-
-	gpus, err := parseNvidiaSmiXML(out)
-	if err != nil {
-		return nil, fmt.Errorf("parse nvidia-smi xml: %w", err)
+	// Try nvidia-smi first — it has the best metadata (model, memory). When
+	// GPUs are bound to vfio-pci nvidia-smi fails with "No devices" (exit 9),
+	// so we fall back to sysfs enumeration which works regardless of driver
+	// binding.
+	gpus := c.collectViaNvidiaSmi(ctx)
+	if gpus == nil {
+		gpus = c.collectViaSysfs(sysfs)
 	}
 
 	top := &agentv1.Topology{
@@ -73,6 +63,62 @@ func (c LinuxCollector) Collect(ctx context.Context) (*agentv1.Topology, error) 
 		}
 	}
 	return top, nil
+}
+
+// collectViaNvidiaSmi returns parsed GPU metadata when nvidia-smi is
+// available and succeeds. Returns nil when the binary is missing or fails
+// (e.g. GPUs are on vfio-pci) so the caller can fall back.
+func (c LinuxCollector) collectViaNvidiaSmi(ctx context.Context) []*agentv1.Gpu {
+	smi := c.NvidiaSmiPath
+	if smi == "" {
+		smi = "nvidia-smi"
+	}
+	if _, err := exec.LookPath(smi); err != nil {
+		return nil
+	}
+	cmd := exec.CommandContext(ctx, smi, "-q", "-x")
+	out, err := cmd.Output()
+	if err != nil {
+		return nil
+	}
+	parsed, err := parseNvidiaSmiXML(out)
+	if err != nil {
+		return nil
+	}
+	return parsed
+}
+
+// collectViaSysfs enumerates NVIDIA GPUs from sysfs. It works whether the
+// cards are on the host driver or vfio-pci because it only reads PCI vendor
+// and class fields. Model name is synthesised from the PCI vendor:device
+// hex pair since nvidia-smi (the usual source) is out of the picture.
+func (c LinuxCollector) collectViaSysfs(sysfs gpu.Sysfs) []*agentv1.Gpu {
+	pcis, err := sysfs.ListNVIDIAGPUs()
+	if err != nil {
+		return nil
+	}
+	out := make([]*agentv1.Gpu, 0, len(pcis))
+	for i, pci := range pcis {
+		model := "NVIDIA"
+		if vendor, verr := sysfs.DeviceVendor(pci); verr == nil {
+			if devID, derr := sysfs.DeviceID(pci); derr == nil {
+				model = "NVIDIA " + trimHexPrefix(vendor) + ":" + trimHexPrefix(devID)
+			}
+		}
+		out = append(out, &agentv1.Gpu{
+			Index:      int32(i), //nolint:gosec // gpu count bounded by host hardware
+			PciAddress: pci,
+			Model:      model,
+		})
+	}
+	return out
+}
+
+func trimHexPrefix(s string) string {
+	if strings.HasPrefix(s, "0x") {
+		return s[2:]
+	}
+	return s
 }
 
 // --- parsing helpers -------------------------------------------------------

@@ -186,3 +186,55 @@ func (s Sysfs) deviceClass(pciAddr string) (string, error) {
 	}
 	return strings.TrimSpace(string(b)), nil
 }
+
+// DeviceVendor returns the PCI vendor id (e.g. "0x10de" for NVIDIA) for
+// pciAddr.
+func (s Sysfs) DeviceVendor(pciAddr string) (string, error) {
+	b, err := os.ReadFile(filepath.Join(s.root(), "bus/pci/devices", pciAddr, "vendor"))
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(b)), nil
+}
+
+// DeviceID returns the PCI device id (e.g. "0x2b85" for RTX 5090) for
+// pciAddr.
+func (s Sysfs) DeviceID(pciAddr string) (string, error) {
+	b, err := os.ReadFile(filepath.Join(s.root(), "bus/pci/devices", pciAddr, "device"))
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(b)), nil
+}
+
+// ListNVIDIAGPUs walks sysfs and returns PCI addresses for every NVIDIA
+// device with a VGA (0x0300) or 3D controller (0x0302) class — i.e. GPUs.
+// Used by the topology collector when nvidia-smi is unavailable because the
+// GPUs are already bound to vfio-pci.
+func (s Sysfs) ListNVIDIAGPUs() ([]string, error) {
+	dir := filepath.Join(s.root(), "bus/pci/devices")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, e := range entries {
+		pci := e.Name()
+		vendor, err := s.DeviceVendor(pci)
+		if err != nil {
+			continue
+		}
+		if vendor != "0x10de" {
+			continue
+		}
+		class, err := s.deviceClass(pci)
+		if err != nil {
+			continue
+		}
+		if strings.HasPrefix(class, "0x030000") || strings.HasPrefix(class, "0x030200") {
+			out = append(out, pci)
+		}
+	}
+	sort.Strings(out)
+	return out, nil
+}

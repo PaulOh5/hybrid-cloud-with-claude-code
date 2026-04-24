@@ -215,6 +215,50 @@ func TestVFIOReady(t *testing.T) {
 	})
 }
 
+func TestListNVIDIAGPUs(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t)
+	// Two GPUs + audio companions + one non-NVIDIA device.
+	f.addDevice("0000:16:00.0", "16", "0x030000", "vfio-pci")
+	writeVendorDevice(t, f.root, "0000:16:00.0", "0x10de", "0x2b85")
+
+	f.addDevice("0000:16:00.1", "16", "0x040300", "vfio-pci") // audio — not a GPU
+	writeVendorDevice(t, f.root, "0000:16:00.1", "0x10de", "0x22e8")
+
+	f.addDevice("0000:43:00.0", "13", "0x030200", "vfio-pci") // 3D controller
+	writeVendorDevice(t, f.root, "0000:43:00.0", "0x10de", "0x2b85")
+
+	f.addDevice("0000:02:00.0", "1", "0x030000", "ast")
+	writeVendorDevice(t, f.root, "0000:02:00.0", "0x1a03", "0x2000") // ASPEED
+
+	pcis, err := f.sysfs().ListNVIDIAGPUs()
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if got, want := len(pcis), 2; got != want {
+		t.Fatalf("got %d, want %d: %v", got, want, pcis)
+	}
+	// Only the two class=0x0300* + vendor=0x10de devices; ASPEED and the
+	// audio companion must be excluded.
+	if pcis[0] != "0000:16:00.0" || pcis[1] != "0000:43:00.0" {
+		t.Fatalf("unexpected: %v", pcis)
+	}
+}
+
+// writeVendorDevice writes the vendor/device sysfs files used by
+// ListNVIDIAGPUs.
+func writeVendorDevice(t *testing.T, root, pci, vendor, device string) {
+	t.Helper()
+	base := filepath.Join(root, "bus/pci/devices", pci)
+	if err := os.WriteFile(filepath.Join(base, "vendor"), []byte(vendor+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(base, "device"), []byte(device+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestDiagnoseBindability(t *testing.T) {
 	t.Parallel()
 

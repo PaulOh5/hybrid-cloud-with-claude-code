@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -29,6 +30,7 @@ func main() {
 		seedDir      = flag.String("seed-dir", env("AGENT_SEED_DIR", "/var/lib/hybrid/seeds"), "cloud-init ISO directory")
 		baseImage    = flag.String("base-image", env("AGENT_BASE_IMAGE", ""), "backing qcow2 for new VM disks")
 		netName      = flag.String("network", env("AGENT_LIBVIRT_NETWORK", "default"), "libvirt network to attach VMs to")
+		diskGB       = flag.Int("disk-gb", envInt("AGENT_DISK_GB", 50), "per-VM virtual disk size in GiB (cloud-init growpart fills it on boot)")
 	)
 	flag.Parse()
 
@@ -69,6 +71,7 @@ func main() {
 			SeedDir:     *seedDir,
 			BaseImage:   *baseImage,
 			NetworkName: *netName,
+			DiskSizeGB:  *diskGB,
 		}, log)
 		onControl = h.OnControl
 	}
@@ -105,4 +108,16 @@ func env(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func envInt(key string, fallback int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	var n int
+	if _, err := fmt.Sscanf(v, "%d", &n); err != nil {
+		return fallback
+	}
+	return n
 }

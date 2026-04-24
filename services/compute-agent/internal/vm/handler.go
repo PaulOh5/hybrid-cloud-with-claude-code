@@ -32,15 +32,21 @@ type Config struct {
 	// NetworkName is the libvirt network to attach the VM to. Defaults to
 	// "default" (libvirt's NAT network) when empty.
 	NetworkName string
+	// DiskSizeGB is the virtual disk size passed to qemu-img resize after the
+	// backing-file clone is created. cloud-init's growpart then expands the
+	// root filesystem to fill it on first boot. Zero keeps the base image
+	// size (typically 3-4 GB — too small for most real workloads).
+	DiskSizeGB int
 }
 
 // Handler processes CreateInstance / DestroyInstance control messages and
 // writes InstanceStatus updates via the provided send callback.
 type Handler struct {
-	mgr   libvirt.Manager
-	cfg   Config
-	log   *slog.Logger
-	imgFn func(ctx context.Context, src, dst string) error
+	mgr      libvirt.Manager
+	cfg      Config
+	log      *slog.Logger
+	imgFn    func(ctx context.Context, src, dst string) error
+	resizeFn func(ctx context.Context, dst string, sizeGB int) error
 
 	mu       sync.Mutex
 	inFlight map[string]struct{}
@@ -56,6 +62,7 @@ func New(mgr libvirt.Manager, cfg Config, log *slog.Logger) *Handler {
 		cfg:      cfg,
 		log:      log,
 		imgFn:    qemuImgCreate,
+		resizeFn: qemuImgResize,
 		inFlight: make(map[string]struct{}),
 	}
 }
@@ -218,6 +225,11 @@ func (h *Handler) prepareFiles(
 		if err := h.imgFn(ctx, h.cfg.BaseImage, diskPath); err != nil {
 			return "", "", fmt.Errorf("create disk: %w", err)
 		}
+		if h.cfg.DiskSizeGB > 0 {
+			if err := h.resizeFn(ctx, diskPath, h.cfg.DiskSizeGB); err != nil {
+				return "", "", fmt.Errorf("resize disk: %w", err)
+			}
+		}
 	}
 
 	f, err := os.Create(seedPath) //nolint:gosec // path joined with controlled dir above
@@ -288,8 +300,26 @@ func qemuImgCreate(ctx context.Context, backing, dst string) error {
 	return nil
 }
 
+// qemuImgResize grows the virtual disk. cloud-init's growpart handles the
+// filesystem side on first boot.
+func qemuImgResize(ctx context.Context, dst string, sizeGB int) error {
+	//nolint:gosec // dst is agent-controlled, sizeGB is an int
+	cmd := exec.CommandContext(ctx, "qemu-img", "resize", dst, fmt.Sprintf("%dG", sizeGB))
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("qemu-img resize: %w: %s", err, string(out))
+	}
+	return nil
+}
+
 // WithImageCreator overrides the disk-creation function. Tests pass a noop.
 func (h *Handler) WithImageCreator(fn func(ctx context.Context, src, dst string) error) *Handler {
 	h.imgFn = fn
+	return h
+}
+
+// WithDiskResizer overrides qemu-img resize. Tests pass a noop.
+func (h *Handler) WithDiskResizer(fn func(ctx context.Context, dst string, sizeGB int) error) *Handler {
+	h.resizeFn = fn
 	return h
 }
