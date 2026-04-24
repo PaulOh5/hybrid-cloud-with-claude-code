@@ -48,8 +48,12 @@ func main() {
 	var handler server.Handler = server.DenyHandler{Reason: "internal token not configured"}
 	if *internalTok != "" {
 		client := ticketclient.New(*apiBaseURL, *internalTok)
-		handler = &tunnelhandler.Handler{Tickets: client, Log: log}
-		log.Info("ticket client configured", "api", *apiBaseURL)
+		handler = &tunnelhandler.Handler{
+			Tickets:     client,
+			AfterTicket: tunnelhandler.Relay,
+			Log:         log,
+		}
+		log.Info("ticket client + relay configured", "api", *apiBaseURL)
 	}
 
 	srv, err := server.New(server.Config{

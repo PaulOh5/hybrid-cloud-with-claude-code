@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"os/signal"
 	"syscall"
@@ -15,6 +16,7 @@ import (
 	"hybridcloud/services/compute-agent/internal/profile"
 	"hybridcloud/services/compute-agent/internal/stream"
 	"hybridcloud/services/compute-agent/internal/topology"
+	"hybridcloud/services/compute-agent/internal/tunnel"
 	"hybridcloud/services/compute-agent/internal/vm"
 	agentv1 "hybridcloud/shared/proto/agent/v1"
 )
@@ -34,6 +36,8 @@ func main() {
 		diskGB          = flag.Int("disk-gb", envInt("AGENT_DISK_GB", 50), "per-VM virtual disk size in GiB (cloud-init growpart fills it on boot)")
 		profilePath     = flag.String("profile", env("AGENT_PROFILE", ""), "path to slot-layout YAML (see docs/specs/phase-1-mvp.md §GPU partitioning)")
 		tunnelAdvertise = flag.String("tunnel-advertise", env("AGENT_TUNNEL_ADVERTISE", ""), "host:port ssh-proxy should dial to tunnel SSH bytes to this node's VMs")
+		tunnelListen    = flag.String("tunnel-listen", env("AGENT_TUNNEL_LISTEN", ""), "TCP address to bind the ssh-tunnel listener; empty disables the tunnel server")
+		tunnelSecret    = flag.String("tunnel-secret", env("AGENT_TUNNEL_SECRET", ""), "shared HMAC secret for ticket verification (matches main-api MAIN_API_TUNNEL_SECRET)")
 	)
 	flag.Parse()
 
@@ -119,6 +123,10 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
+	// SSH tunnel listener (Phase 6). Optional — empty --tunnel-listen keeps
+	// the agent fully outbound for Phase 1 bring-up.
+	startTunnelServer(ctx, log, *tunnelListen, *tunnelSecret, *tunnelAdvertise)
+
 	log.Info("compute-agent starting", "endpoint", *endpoint, "node_name", *nodeName, "vms_disabled", *disableVMs)
 
 	if err := client.Run(ctx); err != nil && err != context.Canceled {
@@ -145,6 +153,36 @@ func envInt(key string, fallback int) int {
 		return fallback
 	}
 	return n
+}
+
+// startTunnelServer wires the Phase 6 SSH tunnel listener when --tunnel-
+// listen is set. Fatal-exits on misconfiguration; otherwise runs the
+// listener as a goroutine that shuts down with ctx.
+func startTunnelServer(ctx context.Context, log *slog.Logger, listen, secret, advertise string) {
+	if listen == "" {
+		return
+	}
+	if secret == "" {
+		log.Error("--tunnel-listen requires --tunnel-secret")
+		os.Exit(2)
+	}
+	verifier, err := tunnel.NewHMACVerifier([]byte(secret))
+	if err != nil {
+		log.Error("tunnel verifier", "err", err)
+		os.Exit(2)
+	}
+	tsrv, err := tunnel.New(tunnel.Config{Verifier: verifier, Log: log})
+	if err != nil {
+		log.Error("tunnel.New", "err", err)
+		os.Exit(2)
+	}
+	lis, err := net.Listen("tcp", listen)
+	if err != nil {
+		log.Error("tunnel listen", "addr", listen, "err", err)
+		os.Exit(1)
+	}
+	log.Info("tunnel listening", "addr", listen, "advertise", advertise)
+	go func() { _ = tsrv.Serve(ctx, lis) }()
 }
 
 // detectGPUIndices returns the GPU indices present on the host so profile
