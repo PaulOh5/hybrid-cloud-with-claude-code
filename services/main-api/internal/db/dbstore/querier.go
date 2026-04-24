@@ -12,6 +12,8 @@ import (
 )
 
 type Querier interface {
+	BindSlotToInstance(ctx context.Context, arg BindSlotToInstanceParams) (GpuSlot, error)
+	CountFreeSlotsByGPUCount(ctx context.Context, arg CountFreeSlotsByGPUCountParams) (int64, error)
 	CreateInstance(ctx context.Context, arg CreateInstanceParams) (Instance, error)
 	DeleteInstance(ctx context.Context, id uuid.UUID) error
 	GetDefaultZone(ctx context.Context) (Zone, error)
@@ -19,10 +21,24 @@ type Querier interface {
 	GetNode(ctx context.Context, id uuid.UUID) (Node, error)
 	GetNodeByName(ctx context.Context, nodeName string) (Node, error)
 	InsertInstanceEvent(ctx context.Context, arg InsertInstanceEventParams) error
+	InsertSlot(ctx context.Context, arg InsertSlotParams) (GpuSlot, error)
 	ListInstanceEvents(ctx context.Context, instanceID uuid.UUID) ([]InstanceEvent, error)
 	ListInstances(ctx context.Context, ownerID uuid.NullUUID) ([]Instance, error)
 	ListNodes(ctx context.Context) ([]Node, error)
+	ListSlotsForNode(ctx context.Context, nodeID uuid.UUID) ([]GpuSlot, error)
+	// pg_advisory_xact_lock serialises all reservations for the same node inside
+	// a single advisory-lock namespace derived from the node UUID. Held until
+	// COMMIT/ROLLBACK.
+	LockNodeForReservation(ctx context.Context, dollar_1 string) error
 	MarkStaleNodesOffline(ctx context.Context, dollar_1 pgtype.Timestamptz) (int64, error)
+	// Rollback helper for the scheduler: frees slots that were reserved but not
+	// yet bound to an instance (e.g. CreateInstance dispatch failed).
+	ReleaseReservedSlots(ctx context.Context, ids []uuid.UUID) (int64, error)
+	ReleaseSlotsForInstance(ctx context.Context, currentInstanceID uuid.NullUUID) (int64, error)
+	// Atomically flips up to $3 free slots of size $2 to reserved and returns
+	// them. Callers should LockNodeForReservation first so two schedulers do
+	// not race on overlapping free sets.
+	ReserveFreeSlots(ctx context.Context, arg ReserveFreeSlotsParams) ([]GpuSlot, error)
 	TouchNodeHeartbeat(ctx context.Context, id uuid.UUID) error
 	UpdateInstanceState(ctx context.Context, arg UpdateInstanceStateParams) (Instance, error)
 	UpsertNode(ctx context.Context, arg UpsertNodeParams) (Node, error)
