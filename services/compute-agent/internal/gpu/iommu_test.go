@@ -259,6 +259,43 @@ func writeVendorDevice(t *testing.T, root, pci, vendor, device string) {
 	}
 }
 
+func TestResetDevice(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t)
+	f.addDevice("0000:16:00.0", "16", "0x030000", "vfio-pci")
+	writeVendorDevice(t, f.root, "0000:16:00.0", "0x10de", "0x2b85")
+
+	resetPath := filepath.Join(f.root, "bus/pci/devices/0000:16:00.0/reset")
+	// Real sysfs reset is write-only, but the test needs to read the value
+	// back to verify; use 0o600 so both sides work inside the tmpdir.
+	if err := os.WriteFile(resetPath, []byte{}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := f.sysfs().ResetDevice("0000:16:00.0"); err != nil {
+		t.Fatalf("reset: %v", err)
+	}
+
+	// Verify sysfs fake now contains our "1".
+	contents, _ := os.ReadFile(resetPath)
+	if string(contents) != "1" {
+		t.Fatalf("reset sysfs not written: %q", contents)
+	}
+}
+
+func TestResetDevice_MissingFile(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t)
+	f.addDevice("0000:99:00.0", "99", "0x030000", "vfio-pci")
+	// No reset file written.
+	err := f.sysfs().ResetDevice("0000:99:00.0")
+	if err == nil {
+		t.Fatal("expected error when reset file absent")
+	}
+}
+
 func TestDiagnoseBindability(t *testing.T) {
 	t.Parallel()
 

@@ -44,6 +44,9 @@ func (f *fakeMgr) DestroyDomain(_ context.Context, name string) error {
 func (f *fakeMgr) DomainState(_ context.Context, _ string) (libvirt.DomainState, error) {
 	return libvirt.StateRunning, nil
 }
+func (f *fakeMgr) DomainPassthroughPCI(_ context.Context, _ string) ([]string, error) {
+	return nil, nil
+}
 func (f *fakeMgr) StreamEvents(_ context.Context) (<-chan libvirt.DomainEvent, error) {
 	ch := make(chan libvirt.DomainEvent)
 	close(ch)

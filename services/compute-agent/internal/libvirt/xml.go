@@ -200,6 +200,48 @@ type hostdevAddressXML struct {
 	Function string `xml:"function,attr"`
 }
 
+// ParsePassthroughPCIFromXML extracts sysfs-format PCI addresses from the
+// <hostdev mode='subsystem' type='pci'> blocks in a libvirt domain XML. Used
+// post-destroy to know which devices to reset. Inverse of buildHostdev.
+func ParsePassthroughPCIFromXML(raw string) ([]string, error) {
+	var doc struct {
+		Devices struct {
+			Hostdevs []struct {
+				Mode   string `xml:"mode,attr"`
+				Type   string `xml:"type,attr"`
+				Source struct {
+					Address struct {
+						Domain   string `xml:"domain,attr"`
+						Bus      string `xml:"bus,attr"`
+						Slot     string `xml:"slot,attr"`
+						Function string `xml:"function,attr"`
+					} `xml:"address"`
+				} `xml:"source"`
+			} `xml:"hostdev"`
+		} `xml:"devices"`
+	}
+	if err := xml.Unmarshal([]byte(raw), &doc); err != nil {
+		return nil, fmt.Errorf("parse domain xml: %w", err)
+	}
+	out := make([]string, 0, len(doc.Devices.Hostdevs))
+	for _, hd := range doc.Devices.Hostdevs {
+		if hd.Mode != "subsystem" || hd.Type != "pci" {
+			continue
+		}
+		a := hd.Source.Address
+		out = append(out, fmt.Sprintf("%s:%s:%s.%s",
+			trimHex(a.Domain), trimHex(a.Bus), trimHex(a.Slot), trimHex(a.Function)))
+	}
+	return out, nil
+}
+
+// trimHex removes "0x" and pads domain/bus/slot to the sysfs widths
+// (4/2/2/1).
+func trimHex(s string) string {
+	s = strings.TrimPrefix(s, "0x")
+	return s
+}
+
 // buildHostdev converts a sysfs-style PCI address ("0000:16:00.0") into the
 // hex-prefixed fields libvirt expects.
 func buildHostdev(pci string) (hostdevXML, error) {

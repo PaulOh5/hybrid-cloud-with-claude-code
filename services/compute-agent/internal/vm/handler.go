@@ -15,6 +15,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"hybridcloud/services/compute-agent/internal/cloudinit"
+	"hybridcloud/services/compute-agent/internal/gpu"
 	"hybridcloud/services/compute-agent/internal/libvirt"
 	agentv1 "hybridcloud/shared/proto/agent/v1"
 )
@@ -43,6 +44,7 @@ type Config struct {
 // writes InstanceStatus updates via the provided send callback.
 type Handler struct {
 	mgr      libvirt.Manager
+	sysfs    gpu.Sysfs
 	cfg      Config
 	log      *slog.Logger
 	imgFn    func(ctx context.Context, src, dst string) error
@@ -59,6 +61,7 @@ func New(mgr libvirt.Manager, cfg Config, log *slog.Logger) *Handler {
 	}
 	return &Handler{
 		mgr:      mgr,
+		sysfs:    gpu.Sysfs{},
 		cfg:      cfg,
 		log:      log,
 		imgFn:    qemuImgCreate,
@@ -166,6 +169,13 @@ func (h *Handler) handleDestroy(
 		},
 	})
 
+	// Capture the hostdev PCI list *before* destroy so we can reset each
+	// device afterwards; post-destroy the domain is gone.
+	pcis, err := h.mgr.DomainPassthroughPCI(ctx, id)
+	if err != nil {
+		h.log.Warn("read passthrough pci list", "instance_id", id, "err", err)
+	}
+
 	// libvirt domain name == instance_id (set in handleCreate) so lookup on
 	// destroy uses the same key without needing a local map.
 	if err := h.mgr.DestroyDomain(ctx, id); err != nil {
@@ -186,6 +196,15 @@ func (h *Handler) handleDestroy(
 	}
 
 	h.cleanupFiles(id)
+
+	// Reset every passthrough device so the next tenant starts from a clean
+	// GPU state (A6 gate). Reset failures are logged but do not block the
+	// stopped→free transition — operators see the warning in metrics.
+	for _, pci := range pcis {
+		if err := h.sysfs.ResetDevice(pci); err != nil {
+			h.log.Warn("gpu reset", "instance_id", id, "pci", pci, "err", err)
+		}
+	}
 
 	send(&agentv1.AgentMessage{
 		Payload: &agentv1.AgentMessage_InstanceStatus{
@@ -321,5 +340,12 @@ func (h *Handler) WithImageCreator(fn func(ctx context.Context, src, dst string)
 // WithDiskResizer overrides qemu-img resize. Tests pass a noop.
 func (h *Handler) WithDiskResizer(fn func(ctx context.Context, dst string, sizeGB int) error) *Handler {
 	h.resizeFn = fn
+	return h
+}
+
+// WithSysfs overrides the sysfs root used for ResetDevice. Tests point it at
+// a tmpdir so they don't need real sysfs.
+func (h *Handler) WithSysfs(s gpu.Sysfs) *Handler {
+	h.sysfs = s
 	return h
 }

@@ -101,6 +101,16 @@ func (f *fakeConn) DomainGetState(d golibvirt.Domain, _ uint32) (int32, int32, e
 	return s, 0, nil
 }
 
+func (f *fakeConn) DomainGetXMLDesc(d golibvirt.Domain, _ golibvirt.DomainXMLFlags) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, ok := f.domains[d.Name]; !ok {
+		return "", fmt.Errorf("not defined")
+	}
+	// A minimal XML with one hostdev so tests exercise the parse path.
+	return `<domain><devices><hostdev mode='subsystem' type='pci'><source><address domain='0x0000' bus='0x16' slot='0x00' function='0x0'/></source></hostdev></devices></domain>`, nil
+}
+
 func (f *fakeConn) Disconnect() error { return nil }
 
 // --- tests -----------------------------------------------------------------

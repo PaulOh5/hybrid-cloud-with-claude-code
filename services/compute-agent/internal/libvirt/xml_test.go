@@ -137,6 +137,34 @@ func TestBuildDomainXML_Hostdev_RejectsBadPCI(t *testing.T) {
 	}
 }
 
+func TestParsePassthroughPCIFromXML_Roundtrip(t *testing.T) {
+	t.Parallel()
+
+	out, err := BuildDomainXML(DomainSpec{
+		Name:           "rt",
+		MemoryMiB:      4096,
+		VCPUs:          2,
+		DiskPath:       "/x.qcow2",
+		PassthroughPCI: []string{"0000:16:00.0", "0000:16:00.1", "0000:43:00.0"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := ParsePassthroughPCIFromXML(string(out))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	want := []string{"0000:16:00.0", "0000:16:00.1", "0000:43:00.0"}
+	if len(got) != len(want) {
+		t.Fatalf("count: got %d, want %d: %v", len(got), len(want), got)
+	}
+	for i, w := range want {
+		if got[i] != w {
+			t.Fatalf("got[%d]=%q want %q", i, got[i], w)
+		}
+	}
+}
+
 func TestBuildDomainXML_ValidationErrors(t *testing.T) {
 	t.Parallel()
 

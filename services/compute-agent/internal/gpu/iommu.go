@@ -207,6 +207,30 @@ func (s Sysfs) DeviceID(pciAddr string) (string, error) {
 	return strings.TrimSpace(string(b)), nil
 }
 
+// ResetDevice triggers a Function Level Reset on pciAddr by writing "1" to
+// /sys/bus/pci/devices/<addr>/reset. This clears the device's state between
+// VM tenants so a fresh VM cannot read the previous tenant's GPU memory.
+// Returns a useful error when the device does not support FLR — the caller
+// should surface it as an A6-gate failure.
+func (s Sysfs) ResetDevice(pciAddr string) error {
+	path := filepath.Join(s.root(), "bus/pci/devices", pciAddr, "reset")
+	if _, err := os.Stat(path); err != nil {
+		return fmt.Errorf("reset file missing for %s: %w", pciAddr, err)
+	}
+	// The sysfs file is write-only; any value triggers the reset.
+	return os.WriteFile(path, []byte("1"), 0) //nolint:gosec // sysfs requires 0 mode for write-only pseudo-files
+}
+
+// ResetMethods reads /sys/bus/pci/devices/<addr>/reset_method so operators
+// can confirm the device actually supports FLR (vs. bus reset).
+func (s Sysfs) ResetMethods(pciAddr string) (string, error) {
+	b, err := os.ReadFile(filepath.Join(s.root(), "bus/pci/devices", pciAddr, "reset_method"))
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(b)), nil
+}
+
 // ListNVIDIAGPUs walks sysfs and returns PCI addresses for every NVIDIA
 // device with a VGA (0x0300) or 3D controller (0x0302) class — i.e. GPUs.
 // Used by the topology collector when nvidia-smi is unavailable because the

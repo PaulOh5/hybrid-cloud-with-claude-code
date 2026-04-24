@@ -21,6 +21,7 @@ type Connector interface {
 	DomainUndefineFlags(d golibvirt.Domain, flags golibvirt.DomainUndefineFlagsValues) error
 	DomainLookupByName(name string) (golibvirt.Domain, error)
 	DomainGetState(d golibvirt.Domain, flags uint32) (int32, int32, error)
+	DomainGetXMLDesc(d golibvirt.Domain, flags golibvirt.DomainXMLFlags) (string, error)
 	Disconnect() error
 }
 
@@ -122,6 +123,21 @@ func (m *LibvirtManager) DomainState(_ context.Context, name string) (DomainStat
 	return mapLibvirtState(raw), nil
 }
 
+// DomainPassthroughPCI parses the domain's live XML and returns the PCI
+// addresses of every <hostdev> attached. Called before DestroyDomain so the
+// agent can reset each device after libvirt releases it.
+func (m *LibvirtManager) DomainPassthroughPCI(_ context.Context, name string) ([]string, error) {
+	dom, err := m.conn.DomainLookupByName(name)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s", ErrDomainNotFound, name)
+	}
+	raw, err := m.conn.DomainGetXMLDesc(dom, 0)
+	if err != nil {
+		return nil, fmt.Errorf("get xml: %w", err)
+	}
+	return ParsePassthroughPCIFromXML(raw)
+}
+
 // StreamEvents returns a channel; the lifecycle-event wiring is finished in
 // Task 3.3 once the state machine is merged. For Phase 2 the channel simply
 // closes when ctx is done.
@@ -165,6 +181,10 @@ func (a libvirtConnAdapter) DomainLookupByName(name string) (golibvirt.Domain, e
 
 func (a libvirtConnAdapter) DomainGetState(d golibvirt.Domain, flags uint32) (int32, int32, error) {
 	return a.l.DomainGetState(d, flags)
+}
+
+func (a libvirtConnAdapter) DomainGetXMLDesc(d golibvirt.Domain, flags golibvirt.DomainXMLFlags) (string, error) {
+	return a.l.DomainGetXMLDesc(d, flags)
 }
 
 func (a libvirtConnAdapter) Disconnect() error { return a.l.Disconnect() }

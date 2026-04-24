@@ -82,6 +82,10 @@ type Manager interface {
 	CreateDomain(ctx context.Context, spec DomainSpec) (DomainInfo, error)
 	DestroyDomain(ctx context.Context, name string) error
 	DomainState(ctx context.Context, name string) (DomainState, error)
+	// DomainPassthroughPCI returns sysfs-format PCI addresses of every
+	// <hostdev> the domain currently has attached. Used post-destroy to
+	// reset the devices before they are handed to the next VM.
+	DomainPassthroughPCI(ctx context.Context, name string) ([]string, error)
 	// StreamEvents returns a channel that closes when ctx is done.
 	StreamEvents(ctx context.Context) (<-chan DomainEvent, error)
 	Close() error
