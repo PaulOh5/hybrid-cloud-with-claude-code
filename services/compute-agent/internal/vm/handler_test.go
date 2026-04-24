@@ -96,8 +96,11 @@ func TestHandler_CreateThenDestroy(t *testing.T) {
 	h.OnControl(ctx, &agentv1.ControlMessage{
 		Payload: &agentv1.ControlMessage_CreateInstance{
 			CreateInstance: &agentv1.CreateInstance{
+				// Use different InstanceId and Name so tests catch the
+				// libvirt-domain-name bug (instance_id, not display name,
+				// must be the key).
 				InstanceId: "inst-1",
-				Name:       "inst-1",
+				Name:       "user-friendly-display-name",
 				MemoryMb:   1024,
 				Vcpus:      1,
 				SshPubkeys: []string{"ssh-ed25519 AAAA"},

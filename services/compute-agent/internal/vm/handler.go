@@ -115,7 +115,10 @@ func (h *Handler) handleCreate(
 	}
 
 	spec := libvirt.DomainSpec{
-		Name:             req.Name,
+		// instance_id as the libvirt domain name keeps the key stable across
+		// create/destroy without maintaining a separate name→id map. The
+		// user-facing display name lives only on the instances row.
+		Name:             id,
 		MemoryMiB:        req.MemoryMb,
 		VCPUs:            req.Vcpus,
 		DiskPath:         diskPath,
@@ -129,7 +132,7 @@ func (h *Handler) handleCreate(
 		return
 	}
 
-	h.log.Info("domain started", "instance_id", id, "uuid", info.UUID)
+	h.log.Info("domain started", "instance_id", id, "display_name", req.Name, "uuid", info.UUID)
 	sendStatus(agentv1.InstanceState_INSTANCE_STATE_RUNNING, statusOpts{})
 }
 
@@ -155,14 +158,8 @@ func (h *Handler) handleDestroy(
 		},
 	})
 
-	// libvirt uses domain name as the key. The caller passes instance_id;
-	// agent uses that as the libvirt domain name (see handleCreate's spec.Name
-	// is req.Name — BUG: CreateInstance passes Name but stores it. For
-	// destroy we look up by req.InstanceId, which we persisted as the domain
-	// Name in handleCreate).
-	//
-	// TODO(phase-4): maintain a local map of instance_id → domain name when
-	// the naming divergence becomes a problem (Phase 4's slot-aware naming).
+	// libvirt domain name == instance_id (set in handleCreate) so lookup on
+	// destroy uses the same key without needing a local map.
 	if err := h.mgr.DestroyDomain(ctx, id); err != nil {
 		h.log.Error("destroy failed", "instance_id", id, "err", err)
 		// Still report stopped after a best-effort cleanup — the row is gone
