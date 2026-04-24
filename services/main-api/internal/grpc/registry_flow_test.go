@@ -48,7 +48,7 @@ func TestRegistry_RegisterAndSend(t *testing.T) {
 	nodeID := uuid.New()
 
 	ch := make(chan *agentv1.ControlMessage, 4)
-	cleanup := reg.Register(nodeID, ch)
+	cleanup := reg.Register(nodeID, ch, "127.0.0.1:8082")
 	defer cleanup()
 
 	if !reg.Connected(nodeID) {
@@ -89,10 +89,10 @@ func TestRegistry_DoubleRegisterReplaces(t *testing.T) {
 	id := uuid.New()
 
 	first := make(chan *agentv1.ControlMessage, 1)
-	cleanup1 := reg.Register(id, first)
+	cleanup1 := reg.Register(id, first, "")
 
 	second := make(chan *agentv1.ControlMessage, 1)
-	cleanup2 := reg.Register(id, second)
+	cleanup2 := reg.Register(id, second, "")
 	defer cleanup2()
 
 	// cleanup1 now refers to a stale entry and must not delete second.

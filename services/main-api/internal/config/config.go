@@ -15,6 +15,9 @@ type Config struct {
 	DatabaseURL   string
 	AdminToken    string
 	AgentToken    string
+	InternalToken string // /internal/* bearer token used by ssh-proxy
+	TunnelSecret  []byte // HMAC key for ssh-ticket signatures (>= 16 bytes)
+	TicketTTL     time.Duration
 	HeartbeatTTL  time.Duration // how long after last_heartbeat we flip to offline
 	SweepInterval time.Duration
 }
@@ -27,6 +30,9 @@ func FromEnv() (Config, error) {
 		DatabaseURL:   os.Getenv("DATABASE_URL"),
 		AdminToken:    os.Getenv("MAIN_API_ADMIN_TOKEN"),
 		AgentToken:    os.Getenv("MAIN_API_AGENT_TOKEN"),
+		InternalToken: os.Getenv("MAIN_API_INTERNAL_TOKEN"),
+		TunnelSecret:  []byte(os.Getenv("MAIN_API_TUNNEL_SECRET")),
+		TicketTTL:     durationEnv("MAIN_API_TICKET_TTL", 15*time.Second),
 		HeartbeatTTL:  durationEnv("MAIN_API_HEARTBEAT_TTL", 60*time.Second),
 		SweepInterval: durationEnv("MAIN_API_SWEEP_INTERVAL", 10*time.Second),
 	}
@@ -39,6 +45,15 @@ func FromEnv() (Config, error) {
 	}
 	if c.AgentToken == "" {
 		return c, errors.New("MAIN_API_AGENT_TOKEN is required")
+	}
+	// Internal token + tunnel secret are optional; missing means the ssh
+	// ticket endpoint is disabled. Enforced together so an operator can't
+	// accidentally ship a signer without auth.
+	if (c.InternalToken == "") != (len(c.TunnelSecret) == 0) {
+		return c, errors.New("MAIN_API_INTERNAL_TOKEN and MAIN_API_TUNNEL_SECRET must be set together")
+	}
+	if len(c.TunnelSecret) > 0 && len(c.TunnelSecret) < 16 {
+		return c, errors.New("MAIN_API_TUNNEL_SECRET must be at least 16 bytes")
 	}
 	return c, nil
 }

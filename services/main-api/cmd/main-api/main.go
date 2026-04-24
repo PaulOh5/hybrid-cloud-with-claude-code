@@ -30,6 +30,7 @@ import (
 	"hybridcloud/services/main-api/internal/instance"
 	"hybridcloud/services/main-api/internal/node"
 	"hybridcloud/services/main-api/internal/slot"
+	"hybridcloud/services/main-api/internal/sshticket"
 	agentv1 "hybridcloud/shared/proto/agent/v1"
 )
 
@@ -111,9 +112,24 @@ func main() {
 		},
 		cfg.AdminToken,
 	)
+	var internalRouter http.Handler
+	if cfg.InternalToken != "" {
+		signer, err := sshticket.NewSigner(cfg.TunnelSecret, cfg.TicketTTL)
+		if err != nil {
+			log.Error("ticket signer", "err", err)
+			os.Exit(2)
+		}
+		internalRouter = api.NewInternalRouter(api.SSHTicketDeps{
+			Instances: instances,
+			Nodes:     nodes,
+			Registry:  registry,
+			Signer:    signer,
+		}, cfg.InternalToken)
+		log.Info("ssh-ticket endpoint enabled", "ttl", cfg.TicketTTL)
+	}
 	httpServer := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           adminRouter,
+		Handler:           api.NewRouter(adminRouter, internalRouter),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	go func() {

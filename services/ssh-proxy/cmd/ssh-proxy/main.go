@@ -18,6 +18,8 @@ import (
 
 	"hybridcloud/services/ssh-proxy/internal/hostkey"
 	"hybridcloud/services/ssh-proxy/internal/server"
+	"hybridcloud/services/ssh-proxy/internal/ticketclient"
+	"hybridcloud/services/ssh-proxy/internal/tunnelhandler"
 )
 
 func main() {
@@ -25,6 +27,8 @@ func main() {
 		listen      = flag.String("listen", env("SSH_PROXY_LISTEN", ":22"), "TCP address to listen on")
 		zone        = flag.String("zone", env("SSH_PROXY_ZONE", "hybrid-cloud.com"), "DNS suffix accepted as tunnel target")
 		hostKeyPath = flag.String("host-key", env("SSH_PROXY_HOST_KEY", "/var/lib/hybrid/ssh-proxy-hostkey"), "PEM file holding the proxy's ed25519 host key")
+		apiBaseURL  = flag.String("api", env("SSH_PROXY_API_ENDPOINT", "http://127.0.0.1:8080"), "main-api base URL for ticket lookups")
+		internalTok = flag.String("internal-token", env("SSH_PROXY_INTERNAL_TOKEN", ""), "bearer token matching main-api's MAIN_API_INTERNAL_TOKEN")
 	)
 	flag.Parse()
 
@@ -41,10 +45,17 @@ func main() {
 		"fingerprint", ssh.FingerprintSHA256(signer.PublicKey()),
 	)
 
+	var handler server.Handler = server.DenyHandler{Reason: "internal token not configured"}
+	if *internalTok != "" {
+		client := ticketclient.New(*apiBaseURL, *internalTok)
+		handler = &tunnelhandler.Handler{Tickets: client, Log: log}
+		log.Info("ticket client configured", "api", *apiBaseURL)
+	}
+
 	srv, err := server.New(server.Config{
 		Zone:     *zone,
 		HostKeys: []ssh.Signer{signer},
-		Handler:  server.DenyHandler{Reason: "ticket lookup not yet wired (Task 6.2)"},
+		Handler:  handler,
 		Log:      log,
 	})
 	if err != nil {

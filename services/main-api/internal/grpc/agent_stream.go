@@ -130,7 +130,7 @@ func (s *AgentStreamService) Stream(stream agentv1.AgentService_StreamServer) er
 	var cleanupRegistry func()
 	sendCh := make(chan *agentv1.ControlMessage, s.sendBuffer())
 	if s.Registry != nil {
-		cleanupRegistry = s.Registry.Register(n.ID, sendCh)
+		cleanupRegistry = s.Registry.Register(n.ID, sendCh, reg.AgentTunnelEndpoint)
 	} else {
 		cleanupRegistry = func() {}
 	}

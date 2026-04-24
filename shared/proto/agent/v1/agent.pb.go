@@ -216,10 +216,15 @@ type Register struct {
 	Hostname     string                 `protobuf:"bytes,2,opt,name=hostname,proto3" json:"hostname,omitempty"`
 	AgentVersion string                 `protobuf:"bytes,3,opt,name=agent_version,json=agentVersion,proto3" json:"agent_version,omitempty"`
 	// Auth token proving the agent may register under this node_name.
-	AgentToken    string    `protobuf:"bytes,4,opt,name=agent_token,json=agentToken,proto3" json:"agent_token,omitempty"`
-	Topology      *Topology `protobuf:"bytes,5,opt,name=topology,proto3" json:"topology,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	AgentToken string    `protobuf:"bytes,4,opt,name=agent_token,json=agentToken,proto3" json:"agent_token,omitempty"`
+	Topology   *Topology `protobuf:"bytes,5,opt,name=topology,proto3" json:"topology,omitempty"`
+	// Phase 6: TCP endpoint (host:port) ssh-proxy should dial to tunnel raw
+	// SSH bytes to this node's VMs. Advertised by the agent so main-api can
+	// issue tickets pointing to it. For MVP co-located deployments this is
+	// usually 127.0.0.1:<port>; production may be a LAN address.
+	AgentTunnelEndpoint string `protobuf:"bytes,6,opt,name=agent_tunnel_endpoint,json=agentTunnelEndpoint,proto3" json:"agent_tunnel_endpoint,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *Register) Reset() {
@@ -285,6 +290,13 @@ func (x *Register) GetTopology() *Topology {
 		return x.Topology
 	}
 	return nil
+}
+
+func (x *Register) GetAgentTunnelEndpoint() string {
+	if x != nil {
+		return x.AgentTunnelEndpoint
+	}
+	return ""
 }
 
 type Heartbeat struct {
@@ -1250,14 +1262,15 @@ const file_agent_proto_rawDesc = "" +
 	"\btopology\x18\x03 \x01(\v2\x1e.hybridcloud.agent.v1.TopologyH\x00R\btopology\x12O\n" +
 	"\x0finstance_status\x18\x04 \x01(\v2$.hybridcloud.agent.v1.InstanceStatusH\x00R\x0einstanceStatus\x12-\n" +
 	"\x03ack\x18\x05 \x01(\v2\x19.hybridcloud.agent.v1.AckH\x00R\x03ackB\t\n" +
-	"\apayload\"\xc5\x01\n" +
+	"\apayload\"\xf9\x01\n" +
 	"\bRegister\x12\x1b\n" +
 	"\tnode_name\x18\x01 \x01(\tR\bnodeName\x12\x1a\n" +
 	"\bhostname\x18\x02 \x01(\tR\bhostname\x12#\n" +
 	"\ragent_version\x18\x03 \x01(\tR\fagentVersion\x12\x1f\n" +
 	"\vagent_token\x18\x04 \x01(\tR\n" +
 	"agentToken\x12:\n" +
-	"\btopology\x18\x05 \x01(\v2\x1e.hybridcloud.agent.v1.TopologyR\btopology\"\xd3\x01\n" +
+	"\btopology\x18\x05 \x01(\v2\x1e.hybridcloud.agent.v1.TopologyR\btopology\x122\n" +
+	"\x15agent_tunnel_endpoint\x18\x06 \x01(\tR\x13agentTunnelEndpoint\"\xd3\x01\n" +
 	"\tHeartbeat\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x123\n" +
 	"\asent_at\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\x06sentAt\x122\n" +

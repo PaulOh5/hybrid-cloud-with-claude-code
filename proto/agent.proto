@@ -32,6 +32,11 @@ message Register {
   // Auth token proving the agent may register under this node_name.
   string agent_token = 4;
   Topology topology = 5;
+  // Phase 6: TCP endpoint (host:port) ssh-proxy should dial to tunnel raw
+  // SSH bytes to this node's VMs. Advertised by the agent so main-api can
+  // issue tickets pointing to it. For MVP co-located deployments this is
+  // usually 127.0.0.1:<port>; production may be a LAN address.
+  string agent_tunnel_endpoint = 6;
 }
 
 message Heartbeat {

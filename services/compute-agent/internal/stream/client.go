@@ -29,6 +29,10 @@ type Config struct {
 	Hostname     string
 	AgentVersion string
 	AgentToken   string
+	// TunnelEndpoint is the host:port ssh-proxy should dial to open raw SSH
+	// tunnels to VMs on this node. Advertised in Register so main-api can
+	// embed it in tickets. Empty means the node opts out of SSH routing.
+	TunnelEndpoint string
 
 	// Topology is consulted on each Register — hot-swap support is Phase 4+.
 	Topology topology.Collector
@@ -133,11 +137,12 @@ func (c *Client) runOnce(ctx context.Context) error {
 	if err := stream.Send(&agentv1.AgentMessage{
 		Payload: &agentv1.AgentMessage_Register{
 			Register: &agentv1.Register{
-				NodeName:     c.cfg.NodeName,
-				Hostname:     c.cfg.Hostname,
-				AgentVersion: c.cfg.AgentVersion,
-				AgentToken:   c.cfg.AgentToken,
-				Topology:     top,
+				NodeName:            c.cfg.NodeName,
+				Hostname:            c.cfg.Hostname,
+				AgentVersion:        c.cfg.AgentVersion,
+				AgentToken:          c.cfg.AgentToken,
+				Topology:            top,
+				AgentTunnelEndpoint: c.cfg.TunnelEndpoint,
 			},
 		},
 	}); err != nil {
