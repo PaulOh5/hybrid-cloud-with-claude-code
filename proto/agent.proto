@@ -118,11 +118,16 @@ message CreateInstance {
   uint32 vcpus = 4;
   // SSH public keys to inject into the guest via cloud-init.
   repeated string ssh_pubkeys = 5;
-  // GPU slot indices on this node that the instance should own. Empty means
-  // no passthrough (Phase 3 default).
+  // GPU slot indices on this node that the instance owns (audit metadata —
+  // the agent does not resolve these).
   repeated int32 slot_indices = 6;
   // Cloud image to boot. Empty means agent's configured default.
   string image_ref = 7;
+  // PCI addresses (sysfs format e.g. "0000:16:00.0") that should be attached
+  // to the guest via vfio. main-api resolves these from the reserved slot's
+  // GPU indices + the node's topology. Includes every IOMMU-group companion
+  // (HDMI audio etc.) so libvirt can bind the whole group.
+  repeated string passthrough_pci_addresses = 8;
 }
 
 message DestroyInstance {

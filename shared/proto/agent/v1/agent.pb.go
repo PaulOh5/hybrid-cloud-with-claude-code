@@ -846,13 +846,18 @@ type CreateInstance struct {
 	Vcpus      uint32                 `protobuf:"varint,4,opt,name=vcpus,proto3" json:"vcpus,omitempty"`
 	// SSH public keys to inject into the guest via cloud-init.
 	SshPubkeys []string `protobuf:"bytes,5,rep,name=ssh_pubkeys,json=sshPubkeys,proto3" json:"ssh_pubkeys,omitempty"`
-	// GPU slot indices on this node that the instance should own. Empty means
-	// no passthrough (Phase 3 default).
+	// GPU slot indices on this node that the instance owns (audit metadata —
+	// the agent does not resolve these).
 	SlotIndices []int32 `protobuf:"varint,6,rep,packed,name=slot_indices,json=slotIndices,proto3" json:"slot_indices,omitempty"`
 	// Cloud image to boot. Empty means agent's configured default.
-	ImageRef      string `protobuf:"bytes,7,opt,name=image_ref,json=imageRef,proto3" json:"image_ref,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	ImageRef string `protobuf:"bytes,7,opt,name=image_ref,json=imageRef,proto3" json:"image_ref,omitempty"`
+	// PCI addresses (sysfs format e.g. "0000:16:00.0") that should be attached
+	// to the guest via vfio. main-api resolves these from the reserved slot's
+	// GPU indices + the node's topology. Includes every IOMMU-group companion
+	// (HDMI audio etc.) so libvirt can bind the whole group.
+	PassthroughPciAddresses []string `protobuf:"bytes,8,rep,name=passthrough_pci_addresses,json=passthroughPciAddresses,proto3" json:"passthrough_pci_addresses,omitempty"`
+	unknownFields           protoimpl.UnknownFields
+	sizeCache               protoimpl.SizeCache
 }
 
 func (x *CreateInstance) Reset() {
@@ -932,6 +937,13 @@ func (x *CreateInstance) GetImageRef() string {
 		return x.ImageRef
 	}
 	return ""
+}
+
+func (x *CreateInstance) GetPassthroughPciAddresses() []string {
+	if x != nil {
+		return x.PassthroughPciAddresses
+	}
+	return nil
 }
 
 type DestroyInstance struct {
@@ -1144,7 +1156,7 @@ const file_agent_proto_rawDesc = "" +
 	"\apayload\"d\n" +
 	"\vRegisterAck\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12<\n" +
-	"\x1aheartbeat_interval_seconds\x18\x02 \x01(\x05R\x18heartbeatIntervalSeconds\"\xd9\x01\n" +
+	"\x1aheartbeat_interval_seconds\x18\x02 \x01(\x05R\x18heartbeatIntervalSeconds\"\x95\x02\n" +
 	"\x0eCreateInstance\x12\x1f\n" +
 	"\vinstance_id\x18\x01 \x01(\tR\n" +
 	"instanceId\x12\x12\n" +
@@ -1154,7 +1166,8 @@ const file_agent_proto_rawDesc = "" +
 	"\vssh_pubkeys\x18\x05 \x03(\tR\n" +
 	"sshPubkeys\x12!\n" +
 	"\fslot_indices\x18\x06 \x03(\x05R\vslotIndices\x12\x1b\n" +
-	"\timage_ref\x18\a \x01(\tR\bimageRef\"2\n" +
+	"\timage_ref\x18\a \x01(\tR\bimageRef\x12:\n" +
+	"\x19passthrough_pci_addresses\x18\b \x03(\tR\x17passthroughPciAddresses\"2\n" +
 	"\x0fDestroyInstance\x12\x1f\n" +
 	"\vinstance_id\x18\x01 \x01(\tR\n" +
 	"instanceId\";\n" +

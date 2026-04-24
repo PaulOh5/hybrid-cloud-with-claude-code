@@ -18,6 +18,7 @@ import (
 	"hybridcloud/services/main-api/internal/db/dbstore"
 	grpcsrv "hybridcloud/services/main-api/internal/grpc"
 	"hybridcloud/services/main-api/internal/instance"
+	"hybridcloud/services/main-api/internal/slot"
 	agentv1 "hybridcloud/shared/proto/agent/v1"
 )
 
@@ -156,6 +157,92 @@ func makeRouter(t *testing.T, nodes api.NodeGetter, insts api.InstanceRepo, disp
 		&api.InstanceHandlers{Instances: insts, Nodes: nodes, Dispatcher: disp},
 		"tok",
 	)
+}
+
+func makeRouterWithSlots(t *testing.T, nodes api.NodeGetter, insts api.InstanceRepo, slots api.SlotRepo, disp api.AgentDispatcher) http.Handler {
+	t.Helper()
+	return api.NewAdminRouter(
+		&api.AdminHandlers{Nodes: &fakeRepo{}},
+		&api.InstanceHandlers{Instances: insts, Nodes: nodes, Slots: slots, Dispatcher: disp},
+		"tok",
+	)
+}
+
+// --- fake slot repo -------------------------------------------------------
+
+type fakeSlotRepo struct {
+	mu         sync.Mutex
+	capacity   int
+	reserved   map[uuid.UUID]slot.Reservation // by instance ID
+	pending    slot.Reservation               // one active reservation at a time for tests
+	released   []uuid.UUID                    // instance IDs released
+	reserveErr error
+	bindErr    error
+	nextIndex  int32
+	gpuIndices []int32 // what slot.GpuIndices to return (tests stub topology lookup)
+}
+
+func newFakeSlotRepo(capacity int) *fakeSlotRepo {
+	return &fakeSlotRepo{
+		capacity:   capacity,
+		reserved:   map[uuid.UUID]slot.Reservation{},
+		gpuIndices: []int32{0},
+	}
+}
+
+func (f *fakeSlotRepo) Reserve(_ context.Context, nodeID uuid.UUID, _, count int32) (slot.Reservation, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.reserveErr != nil {
+		return slot.Reservation{}, f.reserveErr
+	}
+	if f.capacity <= 0 {
+		return slot.Reservation{}, slot.ErrNoFreeSlots
+	}
+	res := slot.Reservation{}
+	for i := int32(0); i < count; i++ {
+		res.Slots = append(res.Slots, dbstore.GpuSlot{
+			ID:         uuid.New(),
+			NodeID:     nodeID,
+			SlotIndex:  f.nextIndex,
+			GpuCount:   1,
+			GpuIndices: append([]int32(nil), f.gpuIndices...),
+			Status:     dbstore.SlotStatusReserved,
+		})
+		f.nextIndex++
+		f.capacity--
+	}
+	f.pending = res
+	return res, nil
+}
+
+func (f *fakeSlotRepo) BindToInstance(_ context.Context, res slot.Reservation, instanceID uuid.UUID) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.bindErr != nil {
+		return f.bindErr
+	}
+	f.reserved[instanceID] = res
+	return nil
+}
+
+func (f *fakeSlotRepo) ReleaseReserved(_ context.Context, res slot.Reservation) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.capacity += len(res.Slots)
+	return nil
+}
+
+func (f *fakeSlotRepo) ReleaseForInstance(_ context.Context, instanceID uuid.UUID) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.released = append(f.released, instanceID)
+	if res, ok := f.reserved[instanceID]; ok {
+		f.capacity += len(res.Slots)
+		delete(f.reserved, instanceID)
+		return int64(len(res.Slots)), nil
+	}
+	return 0, nil
 }
 
 // smallNodeGetter wraps fakeRepo to satisfy NodeGetter without exposing List.
@@ -355,6 +442,178 @@ func TestDeleteInstance_TransitionsAndDispatches(t *testing.T) {
 	defer disp.mu.Unlock()
 	if len(disp.sent) != 1 || disp.sent[0].Msg.GetDestroyInstance() == nil {
 		t.Fatalf("dispatcher: %+v", disp.sent)
+	}
+}
+
+// topologyJSON builds a protojson-formatted Topology string suitable for
+// dbstore.Node.TopologyJson. This must use proto field names because the
+// handler decodes with protojson (which defaults to proto_names).
+func topologyJSON(t *testing.T, gpus ...*agentv1.Gpu) []byte {
+	t.Helper()
+	top := &agentv1.Topology{Gpus: gpus, IommuEnabled: true}
+	// protojson Marshal is available via the admin_instances production code
+	// path; reuse its shape here by encoding a minimal JSON by hand that the
+	// handler's unmarshal accepts.
+	buf := bytes.Buffer{}
+	buf.WriteString(`{"gpus":[`)
+	for i, g := range top.Gpus {
+		if i > 0 {
+			buf.WriteString(",")
+		}
+		j, err := json.Marshal(map[string]any{
+			"index":                   g.Index,
+			"pci_address":             g.PciAddress,
+			"companion_pci_addresses": g.CompanionPciAddresses,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		buf.Write(j)
+	}
+	buf.WriteString(`],"iommu_enabled":true}`)
+	return buf.Bytes()
+}
+
+func TestCreateInstance_GPUCount1_ReservesAndDispatchesPCI(t *testing.T) {
+	t.Parallel()
+
+	nodeID := uuid.New()
+	getter := nodeOnly{nodes: map[uuid.UUID]dbstore.Node{nodeID: {
+		ID:     nodeID,
+		Status: dbstore.NodeStatusOnline,
+		TopologyJson: topologyJSON(t,
+			&agentv1.Gpu{
+				Index:                 0,
+				PciAddress:            "0000:16:00.0",
+				CompanionPciAddresses: []string{"0000:16:00.1"},
+			},
+		),
+	}}}
+	insts := newFakeInstanceRepo()
+	slots := newFakeSlotRepo(4)
+	disp := newFakeDispatcher()
+	disp.setConnected(nodeID)
+
+	router := makeRouterWithSlots(t, getter, insts, slots, disp)
+
+	body, _ := json.Marshal(map[string]any{
+		"node_id":   nodeID.String(),
+		"name":      "gpu-vm",
+		"memory_mb": 8192,
+		"vcpus":     4,
+		"gpu_count": 1,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/admin/instances", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer tok")
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
+	}
+
+	disp.mu.Lock()
+	defer disp.mu.Unlock()
+	if len(disp.sent) != 1 {
+		t.Fatalf("sends: %d", len(disp.sent))
+	}
+	ci := disp.sent[0].Msg.GetCreateInstance()
+	if ci == nil {
+		t.Fatalf("expected CreateInstance, got %T", disp.sent[0].Msg.Payload)
+	}
+	// Must include GPU + companion.
+	want := []string{"0000:16:00.0", "0000:16:00.1"}
+	if len(ci.PassthroughPciAddresses) != 2 ||
+		ci.PassthroughPciAddresses[0] != want[0] ||
+		ci.PassthroughPciAddresses[1] != want[1] {
+		t.Fatalf("passthrough_pci: got %v, want %v", ci.PassthroughPciAddresses, want)
+	}
+	if len(ci.SlotIndices) != 1 {
+		t.Fatalf("slot_indices: %v", ci.SlotIndices)
+	}
+
+	// Slot should have been reserved *and* bound to the instance.
+	slots.mu.Lock()
+	defer slots.mu.Unlock()
+	if len(slots.reserved) != 1 {
+		t.Fatalf("expected 1 bound reservation, got %d", len(slots.reserved))
+	}
+}
+
+func TestCreateInstance_GPUCount1_NoFreeSlots(t *testing.T) {
+	t.Parallel()
+
+	nodeID := uuid.New()
+	getter := nodeOnly{nodes: map[uuid.UUID]dbstore.Node{nodeID: {
+		ID:           nodeID,
+		Status:       dbstore.NodeStatusOnline,
+		TopologyJson: topologyJSON(t, &agentv1.Gpu{Index: 0, PciAddress: "0000:16:00.0"}),
+	}}}
+	insts := newFakeInstanceRepo()
+	slots := newFakeSlotRepo(0)
+	disp := newFakeDispatcher()
+	disp.setConnected(nodeID)
+
+	router := makeRouterWithSlots(t, getter, insts, slots, disp)
+
+	body, _ := json.Marshal(map[string]any{
+		"node_id":   nodeID.String(),
+		"name":      "gpu-vm",
+		"memory_mb": 2048,
+		"vcpus":     1,
+		"gpu_count": 1,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/admin/instances", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer tok")
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("status: %d", rr.Code)
+	}
+	if len(insts.created) != 0 {
+		t.Fatal("instance row must not be created when slots exhausted")
+	}
+}
+
+func TestCreateInstance_GPUCount1_DispatchFailureReleasesSlots(t *testing.T) {
+	t.Parallel()
+
+	nodeID := uuid.New()
+	getter := nodeOnly{nodes: map[uuid.UUID]dbstore.Node{nodeID: {
+		ID:           nodeID,
+		Status:       dbstore.NodeStatusOnline,
+		TopologyJson: topologyJSON(t, &agentv1.Gpu{Index: 0, PciAddress: "0000:16:00.0"}),
+	}}}
+	insts := newFakeInstanceRepo()
+	slots := newFakeSlotRepo(1)
+	disp := newFakeDispatcher()
+	disp.setConnected(nodeID)
+	disp.sendErr = grpcsrv.ErrAgentNotConnected
+
+	router := makeRouterWithSlots(t, getter, insts, slots, disp)
+
+	body, _ := json.Marshal(map[string]any{
+		"node_id":   nodeID.String(),
+		"name":      "x",
+		"memory_mb": 1024,
+		"vcpus":     1,
+		"gpu_count": 1,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/admin/instances", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer tok")
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadGateway {
+		t.Fatalf("status: %d body=%s", rr.Code, rr.Body.String())
+	}
+	// Dispatch failure after bind must release the slot via ReleaseForInstance.
+	if len(slots.released) == 0 {
+		t.Fatalf("expected slot release, got releases=%v", slots.released)
+	}
+	if len(insts.trans) == 0 || insts.trans[len(insts.trans)-1].To != instance.StateFailed {
+		t.Fatalf("expected Failed transition, got %+v", insts.trans)
 	}
 }
 

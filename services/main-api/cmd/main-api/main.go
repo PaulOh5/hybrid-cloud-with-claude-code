@@ -29,6 +29,7 @@ import (
 	grpcsrv "hybridcloud/services/main-api/internal/grpc"
 	"hybridcloud/services/main-api/internal/instance"
 	"hybridcloud/services/main-api/internal/node"
+	"hybridcloud/services/main-api/internal/slot"
 	agentv1 "hybridcloud/shared/proto/agent/v1"
 )
 
@@ -60,6 +61,7 @@ func main() {
 	queries := dbstore.New(pool)
 	nodes := node.NewDBRepo(queries)
 	instances := instance.NewRepo(pool, queries)
+	slots := slot.NewRepo(pool, queries)
 
 	zoneID, err := nodes.DefaultZoneID(ctx)
 	if err != nil {
@@ -71,6 +73,7 @@ func main() {
 	agentSvc := &grpcsrv.AgentStreamService{
 		Nodes:         nodes,
 		Instances:     instances,
+		Slots:         slots,
 		Registry:      registry,
 		ExpectedToken: cfg.AgentToken,
 		DefaultZoneID: zoneID,
@@ -99,7 +102,12 @@ func main() {
 	// HTTP server.
 	adminRouter := api.NewAdminRouter(
 		&api.AdminHandlers{Nodes: nodes},
-		&api.InstanceHandlers{Instances: instances, Nodes: nodes, Dispatcher: registry},
+		&api.InstanceHandlers{
+			Instances:  instances,
+			Nodes:      nodes,
+			Slots:      slots,
+			Dispatcher: registry,
+		},
 		cfg.AdminToken,
 	)
 	httpServer := &http.Server{

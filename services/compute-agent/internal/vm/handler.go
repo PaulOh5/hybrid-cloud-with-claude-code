@@ -124,6 +124,7 @@ func (h *Handler) handleCreate(
 		DiskPath:         diskPath,
 		CloudInitISOPath: seedPath,
 		NetworkName:      h.networkName(),
+		PassthroughPCI:   req.PassthroughPciAddresses,
 	}
 	info, err := h.mgr.CreateDomain(ctx, spec)
 	if err != nil {

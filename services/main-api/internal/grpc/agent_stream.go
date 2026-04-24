@@ -26,12 +26,19 @@ type InstanceUpdater interface {
 	Transition(ctx context.Context, id uuid.UUID, to instance.State, opts instance.TransitionOptions) (dbstore.Instance, error)
 }
 
+// SlotReleaser is the narrow slice of slot.Repo used to free GPU slots when
+// an instance reaches a terminal state. Optional — may be nil in tests.
+type SlotReleaser interface {
+	ReleaseForInstance(ctx context.Context, instanceID uuid.UUID) (int64, error)
+}
+
 // AgentStreamService serves AgentService/Stream.
 type AgentStreamService struct {
 	agentv1.UnimplementedAgentServiceServer
 
 	Nodes             node.Repo
 	Instances         InstanceUpdater
+	Slots             SlotReleaser
 	Registry          *AgentRegistry
 	ExpectedToken     string
 	DefaultZoneID     uuid.UUID
@@ -221,6 +228,13 @@ func (s *AgentStreamService) applyInstanceStatus(ctx context.Context, st *agentv
 		// Invalid transitions happen when the agent reports an old state we
 		// have already advanced past; log and swallow.
 		return err
+	}
+	// Terminal state → free GPU slots so the node capacity recovers without
+	// waiting for an admin DELETE.
+	if s.Slots != nil && instance.IsTerminal(to) {
+		if _, relErr := s.Slots.ReleaseForInstance(ctx, id); relErr != nil {
+			s.log().Warn("slot release after terminal", "err", relErr, "instance_id", id)
+		}
 	}
 	return nil
 }
