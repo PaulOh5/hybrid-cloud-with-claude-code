@@ -1,0 +1,22 @@
+# h20a slot profile — 2× RTX 5090, no NVLink.
+#
+# Two layouts defined; the active one is applied. Switching requires every
+# slot to be free (main-api's SyncFromProfile refuses SyncDegraded otherwise).
+
+active: "1x2"
+
+layouts:
+  # One slot with both GPUs — lets a single VM see 2× RTX 5090.
+  - name: "1x2"
+    slots:
+      - size: 2
+        gpu_indices: [0, 1]
+        nvlink_domain: ""
+
+  # Two single-GPU slots — this is what Phase 4 smoke used.
+  - name: "2x1"
+    slots:
+      - size: 1
+        gpu_indices: [0]
+      - size: 1
+        gpu_indices: [1]

@@ -207,11 +207,20 @@ func (s Sysfs) DeviceID(pciAddr string) (string, error) {
 	return strings.TrimSpace(string(b)), nil
 }
 
+// HasResetFile reports whether /sys/bus/pci/devices/<addr>/reset exists.
+// HDMI audio and USB companions in an IOMMU group often don't expose one —
+// callers use this to skip them without logging noisy warnings.
+func (s Sysfs) HasResetFile(pciAddr string) bool {
+	_, err := os.Stat(filepath.Join(s.root(), "bus/pci/devices", pciAddr, "reset"))
+	return err == nil
+}
+
 // ResetDevice triggers a Function Level Reset on pciAddr by writing "1" to
 // /sys/bus/pci/devices/<addr>/reset. This clears the device's state between
 // VM tenants so a fresh VM cannot read the previous tenant's GPU memory.
-// Returns a useful error when the device does not support FLR — the caller
-// should surface it as an A6-gate failure.
+// Requires root (or CAP_SYS_ADMIN) because the reset file is 0200. Returns a
+// useful error when the device does not support FLR — the caller should
+// surface it as an A6-gate failure.
 func (s Sysfs) ResetDevice(pciAddr string) error {
 	path := filepath.Join(s.root(), "bus/pci/devices", pciAddr, "reset")
 	if _, err := os.Stat(path); err != nil {

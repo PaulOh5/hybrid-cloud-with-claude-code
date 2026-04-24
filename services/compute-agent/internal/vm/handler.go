@@ -198,9 +198,14 @@ func (h *Handler) handleDestroy(
 	h.cleanupFiles(id)
 
 	// Reset every passthrough device so the next tenant starts from a clean
-	// GPU state (A6 gate). Reset failures are logged but do not block the
-	// stopped→free transition — operators see the warning in metrics.
+	// GPU state (A6 gate). Audio / USB companions in the same IOMMU group
+	// usually don't expose a reset file — skip them silently and only log
+	// when the device supports reset but actually fails (permission, device
+	// still busy, etc.).
 	for _, pci := range pcis {
+		if !h.sysfs.HasResetFile(pci) {
+			continue
+		}
 		if err := h.sysfs.ResetDevice(pci); err != nil {
 			h.log.Warn("gpu reset", "instance_id", id, "pci", pci, "err", err)
 		}
