@@ -40,6 +40,10 @@ type Querier interface {
 	// Atomically flips up to $3 free slots of size $2 to reserved and returns
 	// them. Callers should LockNodeForReservation first so two schedulers do
 	// not race on overlapping free sets.
+	//
+	// Phase 5 ordering: prefer slots whose GPUs share an NVLink domain so
+	// multi-GPU VMs land on interconnected GPUs when a choice exists. Tie-break
+	// by slot_index for deterministic selection.
 	ReserveFreeSlots(ctx context.Context, arg ReserveFreeSlotsParams) ([]GpuSlot, error)
 	TouchNodeHeartbeat(ctx context.Context, id uuid.UUID) error
 	UpdateInstanceState(ctx context.Context, arg UpdateInstanceStateParams) (Instance, error)

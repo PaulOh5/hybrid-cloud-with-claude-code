@@ -202,7 +202,10 @@ set status = 'reserved'
 where s.id in (
     select inner_s.id from gpu_slots inner_s
     where inner_s.node_id = $1 and inner_s.status = 'free' and inner_s.gpu_count = $2
-    order by inner_s.slot_index
+    order by
+        case when inner_s.nvlink_domain <> '' then 0 else 1 end,
+        inner_s.nvlink_domain,
+        inner_s.slot_index
     limit $3
     for update
 )
@@ -218,6 +221,10 @@ type ReserveFreeSlotsParams struct {
 // Atomically flips up to $3 free slots of size $2 to reserved and returns
 // them. Callers should LockNodeForReservation first so two schedulers do
 // not race on overlapping free sets.
+//
+// Phase 5 ordering: prefer slots whose GPUs share an NVLink domain so
+// multi-GPU VMs land on interconnected GPUs when a choice exists. Tie-break
+// by slot_index for deterministic selection.
 func (q *Queries) ReserveFreeSlots(ctx context.Context, arg ReserveFreeSlotsParams) ([]GpuSlot, error) {
 	rows, err := q.db.Query(ctx, reserveFreeSlots, arg.NodeID, arg.GpuCount, arg.Limit)
 	if err != nil {

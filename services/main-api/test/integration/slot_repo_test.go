@@ -268,6 +268,47 @@ func TestSlotRepo_SyncFromProfile_InUseSlotsBlockReplace(t *testing.T) {
 	}
 }
 
+// TestSlotRepo_Reserve_PrefersNVLink checks that when two size-matching free
+// slots exist — one with nvlink_domain, one without — the allocator picks the
+// NVLinked slot first. This is the Phase 5 preference ordering.
+func TestSlotRepo_Reserve_PrefersNVLink(t *testing.T) {
+	t.Parallel()
+
+	url := startPostgres(t)
+	migrateUp(t, url)
+	pool, _ := pgxpool.New(context.Background(), url)
+	defer pool.Close()
+
+	ctx := context.Background()
+	q := dbstore.New(pool)
+	repo := slot.NewRepo(pool, q)
+	node := seedNode(t, ctx, q)
+
+	// slot 0: no NVLink, size 2
+	if _, err := q.InsertSlot(ctx, dbstore.InsertSlotParams{
+		NodeID: node.ID, SlotIndex: 0, GpuCount: 2,
+		GpuIndices: []int32{0, 1}, NvlinkDomain: "",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// slot 1: NVLink-A, size 2
+	nvLinked, err := q.InsertSlot(ctx, dbstore.InsertSlotParams{
+		NodeID: node.ID, SlotIndex: 1, GpuCount: 2,
+		GpuIndices: []int32{2, 3}, NvlinkDomain: "nvl-A",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := repo.Reserve(ctx, node.ID, 2, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Slots) != 1 || res.Slots[0].ID != nvLinked.ID {
+		t.Fatalf("expected NVLink slot (id=%s), got %+v", nvLinked.ID, res.Slots)
+	}
+}
+
 func TestSlotRepo_ConcurrentReservation(t *testing.T) {
 	t.Parallel()
 
