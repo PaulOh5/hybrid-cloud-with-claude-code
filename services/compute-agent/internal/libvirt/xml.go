@@ -3,6 +3,8 @@ package libvirt
 import (
 	"encoding/xml"
 	"fmt"
+	"strconv"
+	"strings"
 )
 
 // BuildDomainXML renders a libvirt <domain> definition for the given spec.
@@ -76,6 +78,14 @@ func BuildDomainXML(spec DomainSpec) ([]byte, error) {
 			Source: interfaceSourceXML{Network: spec.NetworkName},
 			Model:  interfaceModelXML{Type: "virtio"},
 		})
+	}
+
+	for _, pci := range spec.PassthroughPCI {
+		hd, err := buildHostdev(pci)
+		if err != nil {
+			return nil, fmt.Errorf("hostdev %s: %w", pci, err)
+		}
+		d.Devices.Hostdevs = append(d.Devices.Hostdevs, hd)
 	}
 
 	buf, err := xml.MarshalIndent(d, "", "  ")
@@ -161,6 +171,66 @@ type devicesXML struct {
 	Consoles   []consoleXML   `xml:"console"`
 	Serials    []serialXML    `xml:"serial"`
 	Graphics   []graphicsXML  `xml:"graphics"`
+	Hostdevs   []hostdevXML   `xml:"hostdev"`
+}
+
+// hostdevXML renders a <hostdev mode='subsystem' type='pci' managed='yes'>
+// entry so libvirt hands the matching device to vfio on domain start and
+// returns it to the host on destroy.
+type hostdevXML struct {
+	Mode    string           `xml:"mode,attr"`
+	Type    string           `xml:"type,attr"`
+	Managed string           `xml:"managed,attr"`
+	Driver  hostdevDriverXML `xml:"driver"`
+	Source  hostdevSourceXML `xml:"source"`
+}
+
+type hostdevDriverXML struct {
+	Name string `xml:"name,attr"`
+}
+
+type hostdevSourceXML struct {
+	Address hostdevAddressXML `xml:"address"`
+}
+
+type hostdevAddressXML struct {
+	Domain   string `xml:"domain,attr"`
+	Bus      string `xml:"bus,attr"`
+	Slot     string `xml:"slot,attr"`
+	Function string `xml:"function,attr"`
+}
+
+// buildHostdev converts a sysfs-style PCI address ("0000:16:00.0") into the
+// hex-prefixed fields libvirt expects.
+func buildHostdev(pci string) (hostdevXML, error) {
+	parts := strings.Split(pci, ":")
+	if len(parts) != 3 {
+		return hostdevXML{}, fmt.Errorf("malformed pci address %q", pci)
+	}
+	devFn := strings.Split(parts[2], ".")
+	if len(devFn) != 2 {
+		return hostdevXML{}, fmt.Errorf("malformed pci slot.function in %q", pci)
+	}
+	// Verify each component is valid hex.
+	for _, f := range []string{parts[0], parts[1], devFn[0], devFn[1]} {
+		if _, err := strconv.ParseUint(f, 16, 32); err != nil {
+			return hostdevXML{}, fmt.Errorf("non-hex component in %q: %w", pci, err)
+		}
+	}
+	return hostdevXML{
+		Mode:    "subsystem",
+		Type:    "pci",
+		Managed: "yes",
+		Driver:  hostdevDriverXML{Name: "vfio"},
+		Source: hostdevSourceXML{
+			Address: hostdevAddressXML{
+				Domain:   "0x" + parts[0],
+				Bus:      "0x" + parts[1],
+				Slot:     "0x" + devFn[0],
+				Function: "0x" + devFn[1],
+			},
+		},
+	}, nil
 }
 
 type diskXML struct {

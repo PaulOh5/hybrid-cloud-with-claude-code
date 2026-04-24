@@ -75,6 +75,68 @@ func TestBuildDomainXML_WithCloudInitAndNetwork(t *testing.T) {
 	}
 }
 
+func TestBuildDomainXML_Hostdev_GPUPassthrough(t *testing.T) {
+	t.Parallel()
+
+	out, err := BuildDomainXML(DomainSpec{
+		Name:      "inst-gpu",
+		MemoryMiB: 16384,
+		VCPUs:     4,
+		DiskPath:  "/imgs/inst-gpu.qcow2",
+		// RTX 5090 + HDMI audio companion from h20a layout.
+		PassthroughPCI: []string{"0000:16:00.0", "0000:16:00.1"},
+	})
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	s := string(out)
+
+	// There should be exactly two <hostdev> blocks with managed="yes" and
+	// the vfio driver.
+	if strings.Count(s, "<hostdev") != 2 {
+		t.Fatalf("expected 2 hostdev entries, got %d:\n%s", strings.Count(s, "<hostdev"), s)
+	}
+	for _, want := range []string{
+		`<hostdev mode="subsystem" type="pci" managed="yes">`,
+		`<driver name="vfio"></driver>`,
+		// GPU itself.
+		`<address domain="0x0000" bus="0x16" slot="0x00" function="0x0"></address>`,
+		// HDMI audio companion (function 0x1).
+		`<address domain="0x0000" bus="0x16" slot="0x00" function="0x1"></address>`,
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("missing %q\n---\n%s", want, s)
+		}
+	}
+}
+
+func TestBuildDomainXML_Hostdev_RejectsBadPCI(t *testing.T) {
+	t.Parallel()
+
+	cases := []string{
+		"16:00.0",      // missing domain
+		"0000-16-00.0", // wrong separator
+		"0000:zz:00.0", // non-hex
+		"0000:16:00",   // missing function
+	}
+	for _, pci := range cases {
+		pci := pci
+		t.Run(pci, func(t *testing.T) {
+			t.Parallel()
+			_, err := BuildDomainXML(DomainSpec{
+				Name:           "x",
+				MemoryMiB:      1024,
+				VCPUs:          1,
+				DiskPath:       "/x",
+				PassthroughPCI: []string{pci},
+			})
+			if err == nil {
+				t.Fatalf("expected error for %q", pci)
+			}
+		})
+	}
+}
+
 func TestBuildDomainXML_ValidationErrors(t *testing.T) {
 	t.Parallel()
 

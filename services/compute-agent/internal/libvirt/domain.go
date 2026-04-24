@@ -30,8 +30,7 @@ func (s DomainState) String() string {
 	}
 }
 
-// DomainSpec describes the VM we want to create. It is intentionally minimal —
-// GPU passthrough lands in Phase 4.
+// DomainSpec describes the VM we want to create.
 type DomainSpec struct {
 	// Name: libvirt domain name, caller-provided, globally unique on the host.
 	Name string
@@ -52,6 +51,12 @@ type DomainSpec struct {
 	// to sane kvm defaults ("pc-q35-*" / /usr/bin/qemu-system-x86_64).
 	MachineType string
 	Emulator    string
+
+	// PassthroughPCI lists PCI addresses (sysfs format, e.g. "0000:16:00.0")
+	// that should be handed to the guest via vfio. Every address must already
+	// be bound to vfio-pci on the host (see scripts/node-bootstrap.sh).
+	// Phase 4 caller passes the GPU + its IOMMU-group companions here.
+	PassthroughPCI []string
 }
 
 // DomainInfo is returned after a successful create. The caller correlates
