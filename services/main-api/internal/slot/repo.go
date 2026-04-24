@@ -135,6 +135,81 @@ func (r *Repo) ReleaseForInstance(ctx context.Context, instanceID uuid.UUID) (in
 	return r.queries.ReleaseSlotsForInstance(ctx, uuid.NullUUID{UUID: instanceID, Valid: true})
 }
 
+// SyncResult is what SyncFromProfile tells the caller — did we replace the
+// slots, do nothing, or refuse because slots are in use.
+type SyncResult int
+
+const (
+	SyncUnchanged SyncResult = iota // profile hash matches DB; no-op
+	SyncReplaced                    // DB slots replaced with profile slots
+	SyncDegraded                    // profile differs but existing slots are in-use → keep old
+)
+
+// ProfileSlot mirrors the proto SlotSpec so callers outside the grpc stream
+// can sync without importing the proto package.
+type ProfileSlot struct {
+	SlotIndex    int32
+	GpuCount     int32
+	GpuIndices   []int32
+	NvlinkDomain string
+}
+
+// SyncFromProfile reconciles the DB's gpu_slots for nodeID with the list
+// reported by the agent. If the new hash matches the node's stored
+// profile_hash it is a no-op. Otherwise slots are replaced when every
+// existing slot is free; when any slot is in_use we refuse to touch them
+// (the caller should mark the node degraded and alert the operator).
+func (r *Repo) SyncFromProfile(
+	ctx context.Context,
+	nodeID uuid.UUID,
+	profileHash string,
+	slots []ProfileSlot,
+) (SyncResult, error) {
+	// Short-circuit: if hash matches, nothing to do.
+	node, err := r.queries.GetNode(ctx, nodeID)
+	if err != nil {
+		return SyncUnchanged, fmt.Errorf("load node: %w", err)
+	}
+	if node.ProfileHash == profileHash && profileHash != "" {
+		return SyncUnchanged, nil
+	}
+
+	var result SyncResult
+	err = r.inTx(ctx, func(q *dbstore.Queries) error {
+		inUse, err := q.CountNonFreeSlotsForNode(ctx, nodeID)
+		if err != nil {
+			return fmt.Errorf("count non-free: %w", err)
+		}
+		if inUse > 0 {
+			result = SyncDegraded
+			return nil
+		}
+		if _, err := q.DeleteSlotsForNode(ctx, nodeID); err != nil {
+			return fmt.Errorf("delete existing: %w", err)
+		}
+		for _, s := range slots {
+			if _, err := q.InsertSlot(ctx, dbstore.InsertSlotParams{
+				NodeID:       nodeID,
+				SlotIndex:    s.SlotIndex,
+				GpuCount:     s.GpuCount,
+				GpuIndices:   s.GpuIndices,
+				NvlinkDomain: s.NvlinkDomain,
+			}); err != nil {
+				return fmt.Errorf("insert slot %d: %w", s.SlotIndex, err)
+			}
+		}
+		if err := q.UpdateNodeProfileHash(ctx, dbstore.UpdateNodeProfileHashParams{
+			ID:          nodeID,
+			ProfileHash: profileHash,
+		}); err != nil {
+			return fmt.Errorf("update profile_hash: %w", err)
+		}
+		result = SyncReplaced
+		return nil
+	})
+	return result, err
+}
+
 // --- helpers ---------------------------------------------------------------
 
 func (r *Repo) inTx(ctx context.Context, fn func(q *dbstore.Queries) error) error {

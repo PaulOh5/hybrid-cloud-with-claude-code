@@ -17,6 +17,7 @@ import (
 	"hybridcloud/services/main-api/internal/db/dbstore"
 	"hybridcloud/services/main-api/internal/instance"
 	"hybridcloud/services/main-api/internal/node"
+	"hybridcloud/services/main-api/internal/slot"
 	agentv1 "hybridcloud/shared/proto/agent/v1"
 )
 
@@ -32,6 +33,12 @@ type SlotReleaser interface {
 	ReleaseForInstance(ctx context.Context, instanceID uuid.UUID) (int64, error)
 }
 
+// ProfileSyncer is what the stream calls after Register to reconcile the
+// reported slot layout with the DB. Optional — may be nil in tests.
+type ProfileSyncer interface {
+	SyncFromProfile(ctx context.Context, nodeID uuid.UUID, profileHash string, slots []slot.ProfileSlot) (slot.SyncResult, error)
+}
+
 // AgentStreamService serves AgentService/Stream.
 type AgentStreamService struct {
 	agentv1.UnimplementedAgentServiceServer
@@ -39,6 +46,7 @@ type AgentStreamService struct {
 	Nodes             node.Repo
 	Instances         InstanceUpdater
 	Slots             SlotReleaser
+	Profiles          ProfileSyncer
 	Registry          *AgentRegistry
 	ExpectedToken     string
 	DefaultZoneID     uuid.UUID
@@ -100,6 +108,23 @@ func (s *AgentStreamService) Stream(stream agentv1.AgentService_StreamServer) er
 		"agent_version", reg.AgentVersion,
 		"elapsed_ms", time.Since(now).Milliseconds(),
 	)
+
+	// Sync slots from the reported profile. Missing profile → skip (the node
+	// is a pre-production bring-up); hash match → no-op.
+	if s.Profiles != nil && reg.Topology != nil && reg.Topology.Profile != nil {
+		result, err := s.Profiles.SyncFromProfile(ctx, n.ID,
+			reg.Topology.Profile.Hash, toProfileSlots(reg.Topology.Profile.Slots))
+		if err != nil {
+			s.log().Error("profile sync", "err", err, "node_id", n.ID)
+		} else {
+			s.log().Info("profile sync",
+				"node_id", n.ID,
+				"result", syncResultString(result),
+				"profile", reg.Topology.Profile.Name,
+				"slots", len(reg.Topology.Profile.Slots),
+			)
+		}
+	}
 
 	// Register a send channel so the REST layer can push ControlMessages.
 	var cleanupRegistry func()
@@ -300,6 +325,33 @@ func marshalTopology(t *agentv1.Topology) ([]byte, error) {
 		return []byte("{}"), nil
 	}
 	return protojsonMarshal(t)
+}
+
+// toProfileSlots converts the proto wire format to the slot.ProfileSlot
+// values SyncFromProfile expects.
+func toProfileSlots(in []*agentv1.SlotSpec) []slot.ProfileSlot {
+	out := make([]slot.ProfileSlot, 0, len(in))
+	for _, s := range in {
+		out = append(out, slot.ProfileSlot{
+			SlotIndex:    s.SlotIndex,
+			GpuCount:     s.GpuCount,
+			GpuIndices:   s.GpuIndices,
+			NvlinkDomain: s.NvlinkDomain,
+		})
+	}
+	return out
+}
+
+func syncResultString(r slot.SyncResult) string {
+	switch r {
+	case slot.SyncUnchanged:
+		return "unchanged"
+	case slot.SyncReplaced:
+		return "replaced"
+	case slot.SyncDegraded:
+		return "degraded"
+	}
+	return "unknown"
 }
 
 // mapInstanceState translates the proto enum to the DB enum used by the Repo.

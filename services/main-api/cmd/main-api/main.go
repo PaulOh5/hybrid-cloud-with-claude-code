@@ -74,6 +74,7 @@ func main() {
 		Nodes:         nodes,
 		Instances:     instances,
 		Slots:         slots,
+		Profiles:      slots,
 		Registry:      registry,
 		ExpectedToken: cfg.AgentToken,
 		DefaultZoneID: zoneID,

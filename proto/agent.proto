@@ -49,6 +49,29 @@ message Topology {
   repeated Gpu gpus = 1;
   repeated NvlinkPair nvlink_pairs = 2;
   bool iommu_enabled = 3;
+  // Phase 5: the slot layout the operator chose for this node.
+  Profile profile = 4;
+}
+
+// Profile is the operator-selected slot layout. main-api uses it to seed the
+// gpu_slots table on first register and detect drift thereafter.
+message Profile {
+  // Human-readable name from the YAML (e.g. "2x1" for two single-GPU slots).
+  string name = 1;
+  // SHA-256 of the YAML bytes so main-api can detect changes without
+  // comparing full slot lists.
+  string hash = 2;
+  repeated SlotSpec slots = 3;
+}
+
+message SlotSpec {
+  int32 slot_index = 1;
+  int32 gpu_count = 2;
+  // GPU indices (matching Gpu.index) that make up this slot.
+  repeated int32 gpu_indices = 3;
+  // Optional NVLink domain identifier — slots whose gpus share a domain
+  // advertise the same string here.
+  string nvlink_domain = 4;
 }
 
 message Gpu {

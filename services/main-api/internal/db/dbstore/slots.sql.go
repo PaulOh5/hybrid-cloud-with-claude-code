@@ -58,6 +58,29 @@ func (q *Queries) CountFreeSlotsByGPUCount(ctx context.Context, arg CountFreeSlo
 	return free_count, err
 }
 
+const countNonFreeSlotsForNode = `-- name: CountNonFreeSlotsForNode :one
+select count(*)::bigint from gpu_slots where node_id = $1 and status <> 'free'
+`
+
+func (q *Queries) CountNonFreeSlotsForNode(ctx context.Context, nodeID uuid.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countNonFreeSlotsForNode, nodeID)
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const deleteSlotsForNode = `-- name: DeleteSlotsForNode :execrows
+delete from gpu_slots where node_id = $1
+`
+
+func (q *Queries) DeleteSlotsForNode(ctx context.Context, nodeID uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteSlotsForNode, nodeID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const insertSlot = `-- name: InsertSlot :one
 insert into gpu_slots (node_id, slot_index, gpu_count, gpu_indices, nvlink_domain)
 values ($1, $2, $3, $4, $5)
@@ -222,4 +245,18 @@ func (q *Queries) ReserveFreeSlots(ctx context.Context, arg ReserveFreeSlotsPara
 		return nil, err
 	}
 	return items, nil
+}
+
+const updateNodeProfileHash = `-- name: UpdateNodeProfileHash :exec
+update nodes set profile_hash = $2, updated_at = now() where id = $1
+`
+
+type UpdateNodeProfileHashParams struct {
+	ID          uuid.UUID `json:"id"`
+	ProfileHash string    `json:"profile_hash"`
+}
+
+func (q *Queries) UpdateNodeProfileHash(ctx context.Context, arg UpdateNodeProfileHashParams) error {
+	_, err := q.db.Exec(ctx, updateNodeProfileHash, arg.ID, arg.ProfileHash)
+	return err
 }

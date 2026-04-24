@@ -367,10 +367,12 @@ func (x *Heartbeat) GetMemFreeBytes() uint64 {
 // register time and again whenever the agent detects a change (e.g. a GPU
 // dropped off the PCI bus).
 type Topology struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Gpus          []*Gpu                 `protobuf:"bytes,1,rep,name=gpus,proto3" json:"gpus,omitempty"`
-	NvlinkPairs   []*NvlinkPair          `protobuf:"bytes,2,rep,name=nvlink_pairs,json=nvlinkPairs,proto3" json:"nvlink_pairs,omitempty"`
-	IommuEnabled  bool                   `protobuf:"varint,3,opt,name=iommu_enabled,json=iommuEnabled,proto3" json:"iommu_enabled,omitempty"`
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	Gpus         []*Gpu                 `protobuf:"bytes,1,rep,name=gpus,proto3" json:"gpus,omitempty"`
+	NvlinkPairs  []*NvlinkPair          `protobuf:"bytes,2,rep,name=nvlink_pairs,json=nvlinkPairs,proto3" json:"nvlink_pairs,omitempty"`
+	IommuEnabled bool                   `protobuf:"varint,3,opt,name=iommu_enabled,json=iommuEnabled,proto3" json:"iommu_enabled,omitempty"`
+	// Phase 5: the slot layout the operator chose for this node.
+	Profile       *Profile `protobuf:"bytes,4,opt,name=profile,proto3" json:"profile,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -426,6 +428,149 @@ func (x *Topology) GetIommuEnabled() bool {
 	return false
 }
 
+func (x *Topology) GetProfile() *Profile {
+	if x != nil {
+		return x.Profile
+	}
+	return nil
+}
+
+// Profile is the operator-selected slot layout. main-api uses it to seed the
+// gpu_slots table on first register and detect drift thereafter.
+type Profile struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Human-readable name from the YAML (e.g. "2x1" for two single-GPU slots).
+	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	// SHA-256 of the YAML bytes so main-api can detect changes without
+	// comparing full slot lists.
+	Hash          string      `protobuf:"bytes,2,opt,name=hash,proto3" json:"hash,omitempty"`
+	Slots         []*SlotSpec `protobuf:"bytes,3,rep,name=slots,proto3" json:"slots,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Profile) Reset() {
+	*x = Profile{}
+	mi := &file_agent_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Profile) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Profile) ProtoMessage() {}
+
+func (x *Profile) ProtoReflect() protoreflect.Message {
+	mi := &file_agent_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Profile.ProtoReflect.Descriptor instead.
+func (*Profile) Descriptor() ([]byte, []int) {
+	return file_agent_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *Profile) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *Profile) GetHash() string {
+	if x != nil {
+		return x.Hash
+	}
+	return ""
+}
+
+func (x *Profile) GetSlots() []*SlotSpec {
+	if x != nil {
+		return x.Slots
+	}
+	return nil
+}
+
+type SlotSpec struct {
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	SlotIndex int32                  `protobuf:"varint,1,opt,name=slot_index,json=slotIndex,proto3" json:"slot_index,omitempty"`
+	GpuCount  int32                  `protobuf:"varint,2,opt,name=gpu_count,json=gpuCount,proto3" json:"gpu_count,omitempty"`
+	// GPU indices (matching Gpu.index) that make up this slot.
+	GpuIndices []int32 `protobuf:"varint,3,rep,packed,name=gpu_indices,json=gpuIndices,proto3" json:"gpu_indices,omitempty"`
+	// Optional NVLink domain identifier — slots whose gpus share a domain
+	// advertise the same string here.
+	NvlinkDomain  string `protobuf:"bytes,4,opt,name=nvlink_domain,json=nvlinkDomain,proto3" json:"nvlink_domain,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SlotSpec) Reset() {
+	*x = SlotSpec{}
+	mi := &file_agent_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SlotSpec) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SlotSpec) ProtoMessage() {}
+
+func (x *SlotSpec) ProtoReflect() protoreflect.Message {
+	mi := &file_agent_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SlotSpec.ProtoReflect.Descriptor instead.
+func (*SlotSpec) Descriptor() ([]byte, []int) {
+	return file_agent_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *SlotSpec) GetSlotIndex() int32 {
+	if x != nil {
+		return x.SlotIndex
+	}
+	return 0
+}
+
+func (x *SlotSpec) GetGpuCount() int32 {
+	if x != nil {
+		return x.GpuCount
+	}
+	return 0
+}
+
+func (x *SlotSpec) GetGpuIndices() []int32 {
+	if x != nil {
+		return x.GpuIndices
+	}
+	return nil
+}
+
+func (x *SlotSpec) GetNvlinkDomain() string {
+	if x != nil {
+		return x.NvlinkDomain
+	}
+	return ""
+}
+
 type Gpu struct {
 	state       protoimpl.MessageState `protogen:"open.v1"`
 	Index       int32                  `protobuf:"varint,1,opt,name=index,proto3" json:"index,omitempty"`                            // 0..N-1 stable across reboots
@@ -451,7 +596,7 @@ type Gpu struct {
 
 func (x *Gpu) Reset() {
 	*x = Gpu{}
-	mi := &file_agent_proto_msgTypes[4]
+	mi := &file_agent_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -463,7 +608,7 @@ func (x *Gpu) String() string {
 func (*Gpu) ProtoMessage() {}
 
 func (x *Gpu) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[4]
+	mi := &file_agent_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -476,7 +621,7 @@ func (x *Gpu) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Gpu.ProtoReflect.Descriptor instead.
 func (*Gpu) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{4}
+	return file_agent_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *Gpu) GetIndex() int32 {
@@ -552,7 +697,7 @@ type NvlinkPair struct {
 
 func (x *NvlinkPair) Reset() {
 	*x = NvlinkPair{}
-	mi := &file_agent_proto_msgTypes[5]
+	mi := &file_agent_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -564,7 +709,7 @@ func (x *NvlinkPair) String() string {
 func (*NvlinkPair) ProtoMessage() {}
 
 func (x *NvlinkPair) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[5]
+	mi := &file_agent_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -577,7 +722,7 @@ func (x *NvlinkPair) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NvlinkPair.ProtoReflect.Descriptor instead.
 func (*NvlinkPair) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{5}
+	return file_agent_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *NvlinkPair) GetGpuAIndex() int32 {
@@ -609,7 +754,7 @@ type InstanceStatus struct {
 
 func (x *InstanceStatus) Reset() {
 	*x = InstanceStatus{}
-	mi := &file_agent_proto_msgTypes[6]
+	mi := &file_agent_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -621,7 +766,7 @@ func (x *InstanceStatus) String() string {
 func (*InstanceStatus) ProtoMessage() {}
 
 func (x *InstanceStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[6]
+	mi := &file_agent_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -634,7 +779,7 @@ func (x *InstanceStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InstanceStatus.ProtoReflect.Descriptor instead.
 func (*InstanceStatus) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{6}
+	return file_agent_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *InstanceStatus) GetInstanceId() string {
@@ -687,7 +832,7 @@ type ControlMessage struct {
 
 func (x *ControlMessage) Reset() {
 	*x = ControlMessage{}
-	mi := &file_agent_proto_msgTypes[7]
+	mi := &file_agent_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -699,7 +844,7 @@ func (x *ControlMessage) String() string {
 func (*ControlMessage) ProtoMessage() {}
 
 func (x *ControlMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[7]
+	mi := &file_agent_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -712,7 +857,7 @@ func (x *ControlMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ControlMessage.ProtoReflect.Descriptor instead.
 func (*ControlMessage) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{7}
+	return file_agent_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *ControlMessage) GetPayload() isControlMessage_Payload {
@@ -796,7 +941,7 @@ type RegisterAck struct {
 
 func (x *RegisterAck) Reset() {
 	*x = RegisterAck{}
-	mi := &file_agent_proto_msgTypes[8]
+	mi := &file_agent_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -808,7 +953,7 @@ func (x *RegisterAck) String() string {
 func (*RegisterAck) ProtoMessage() {}
 
 func (x *RegisterAck) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[8]
+	mi := &file_agent_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -821,7 +966,7 @@ func (x *RegisterAck) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RegisterAck.ProtoReflect.Descriptor instead.
 func (*RegisterAck) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{8}
+	return file_agent_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *RegisterAck) GetNodeId() string {
@@ -862,7 +1007,7 @@ type CreateInstance struct {
 
 func (x *CreateInstance) Reset() {
 	*x = CreateInstance{}
-	mi := &file_agent_proto_msgTypes[9]
+	mi := &file_agent_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -874,7 +1019,7 @@ func (x *CreateInstance) String() string {
 func (*CreateInstance) ProtoMessage() {}
 
 func (x *CreateInstance) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[9]
+	mi := &file_agent_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -887,7 +1032,7 @@ func (x *CreateInstance) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateInstance.ProtoReflect.Descriptor instead.
 func (*CreateInstance) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{9}
+	return file_agent_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *CreateInstance) GetInstanceId() string {
@@ -955,7 +1100,7 @@ type DestroyInstance struct {
 
 func (x *DestroyInstance) Reset() {
 	*x = DestroyInstance{}
-	mi := &file_agent_proto_msgTypes[10]
+	mi := &file_agent_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -967,7 +1112,7 @@ func (x *DestroyInstance) String() string {
 func (*DestroyInstance) ProtoMessage() {}
 
 func (x *DestroyInstance) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[10]
+	mi := &file_agent_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -980,7 +1125,7 @@ func (x *DestroyInstance) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DestroyInstance.ProtoReflect.Descriptor instead.
 func (*DestroyInstance) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{10}
+	return file_agent_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *DestroyInstance) GetInstanceId() string {
@@ -999,7 +1144,7 @@ type Ping struct {
 
 func (x *Ping) Reset() {
 	*x = Ping{}
-	mi := &file_agent_proto_msgTypes[11]
+	mi := &file_agent_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1011,7 +1156,7 @@ func (x *Ping) String() string {
 func (*Ping) ProtoMessage() {}
 
 func (x *Ping) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[11]
+	mi := &file_agent_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1024,7 +1169,7 @@ func (x *Ping) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Ping.ProtoReflect.Descriptor instead.
 func (*Ping) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{11}
+	return file_agent_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *Ping) GetSentAt() *timestamppb.Timestamp {
@@ -1045,7 +1190,7 @@ type Ack struct {
 
 func (x *Ack) Reset() {
 	*x = Ack{}
-	mi := &file_agent_proto_msgTypes[12]
+	mi := &file_agent_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1057,7 +1202,7 @@ func (x *Ack) String() string {
 func (*Ack) ProtoMessage() {}
 
 func (x *Ack) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[12]
+	mi := &file_agent_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1070,7 +1215,7 @@ func (x *Ack) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Ack.ProtoReflect.Descriptor instead.
 func (*Ack) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{12}
+	return file_agent_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *Ack) GetCorrelationId() string {
@@ -1118,11 +1263,23 @@ const file_agent_proto_rawDesc = "" +
 	"\asent_at\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\x06sentAt\x122\n" +
 	"\x15active_instance_count\x18\x03 \x01(\x05R\x13activeInstanceCount\x12\x1e\n" +
 	"\vcpu_load_1m\x18\x04 \x01(\x01R\tcpuLoad1m\x12$\n" +
-	"\x0emem_free_bytes\x18\x05 \x01(\x04R\fmemFreeBytes\"\xa3\x01\n" +
+	"\x0emem_free_bytes\x18\x05 \x01(\x04R\fmemFreeBytes\"\xdc\x01\n" +
 	"\bTopology\x12-\n" +
 	"\x04gpus\x18\x01 \x03(\v2\x19.hybridcloud.agent.v1.GpuR\x04gpus\x12C\n" +
 	"\fnvlink_pairs\x18\x02 \x03(\v2 .hybridcloud.agent.v1.NvlinkPairR\vnvlinkPairs\x12#\n" +
-	"\riommu_enabled\x18\x03 \x01(\bR\fiommuEnabled\"\xa8\x02\n" +
+	"\riommu_enabled\x18\x03 \x01(\bR\fiommuEnabled\x127\n" +
+	"\aprofile\x18\x04 \x01(\v2\x1d.hybridcloud.agent.v1.ProfileR\aprofile\"g\n" +
+	"\aProfile\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
+	"\x04hash\x18\x02 \x01(\tR\x04hash\x124\n" +
+	"\x05slots\x18\x03 \x03(\v2\x1e.hybridcloud.agent.v1.SlotSpecR\x05slots\"\x8c\x01\n" +
+	"\bSlotSpec\x12\x1d\n" +
+	"\n" +
+	"slot_index\x18\x01 \x01(\x05R\tslotIndex\x12\x1b\n" +
+	"\tgpu_count\x18\x02 \x01(\x05R\bgpuCount\x12\x1f\n" +
+	"\vgpu_indices\x18\x03 \x03(\x05R\n" +
+	"gpuIndices\x12#\n" +
+	"\rnvlink_domain\x18\x04 \x01(\tR\fnvlinkDomain\"\xa8\x02\n" +
 	"\x03Gpu\x12\x14\n" +
 	"\x05index\x18\x01 \x01(\x05R\x05index\x12\x1f\n" +
 	"\vpci_address\x18\x02 \x01(\tR\n" +
@@ -1200,48 +1357,52 @@ func file_agent_proto_rawDescGZIP() []byte {
 }
 
 var file_agent_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
+var file_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
 var file_agent_proto_goTypes = []any{
 	(InstanceState)(0),            // 0: hybridcloud.agent.v1.InstanceState
 	(*AgentMessage)(nil),          // 1: hybridcloud.agent.v1.AgentMessage
 	(*Register)(nil),              // 2: hybridcloud.agent.v1.Register
 	(*Heartbeat)(nil),             // 3: hybridcloud.agent.v1.Heartbeat
 	(*Topology)(nil),              // 4: hybridcloud.agent.v1.Topology
-	(*Gpu)(nil),                   // 5: hybridcloud.agent.v1.Gpu
-	(*NvlinkPair)(nil),            // 6: hybridcloud.agent.v1.NvlinkPair
-	(*InstanceStatus)(nil),        // 7: hybridcloud.agent.v1.InstanceStatus
-	(*ControlMessage)(nil),        // 8: hybridcloud.agent.v1.ControlMessage
-	(*RegisterAck)(nil),           // 9: hybridcloud.agent.v1.RegisterAck
-	(*CreateInstance)(nil),        // 10: hybridcloud.agent.v1.CreateInstance
-	(*DestroyInstance)(nil),       // 11: hybridcloud.agent.v1.DestroyInstance
-	(*Ping)(nil),                  // 12: hybridcloud.agent.v1.Ping
-	(*Ack)(nil),                   // 13: hybridcloud.agent.v1.Ack
-	(*timestamppb.Timestamp)(nil), // 14: google.protobuf.Timestamp
+	(*Profile)(nil),               // 5: hybridcloud.agent.v1.Profile
+	(*SlotSpec)(nil),              // 6: hybridcloud.agent.v1.SlotSpec
+	(*Gpu)(nil),                   // 7: hybridcloud.agent.v1.Gpu
+	(*NvlinkPair)(nil),            // 8: hybridcloud.agent.v1.NvlinkPair
+	(*InstanceStatus)(nil),        // 9: hybridcloud.agent.v1.InstanceStatus
+	(*ControlMessage)(nil),        // 10: hybridcloud.agent.v1.ControlMessage
+	(*RegisterAck)(nil),           // 11: hybridcloud.agent.v1.RegisterAck
+	(*CreateInstance)(nil),        // 12: hybridcloud.agent.v1.CreateInstance
+	(*DestroyInstance)(nil),       // 13: hybridcloud.agent.v1.DestroyInstance
+	(*Ping)(nil),                  // 14: hybridcloud.agent.v1.Ping
+	(*Ack)(nil),                   // 15: hybridcloud.agent.v1.Ack
+	(*timestamppb.Timestamp)(nil), // 16: google.protobuf.Timestamp
 }
 var file_agent_proto_depIdxs = []int32{
 	2,  // 0: hybridcloud.agent.v1.AgentMessage.register:type_name -> hybridcloud.agent.v1.Register
 	3,  // 1: hybridcloud.agent.v1.AgentMessage.heartbeat:type_name -> hybridcloud.agent.v1.Heartbeat
 	4,  // 2: hybridcloud.agent.v1.AgentMessage.topology:type_name -> hybridcloud.agent.v1.Topology
-	7,  // 3: hybridcloud.agent.v1.AgentMessage.instance_status:type_name -> hybridcloud.agent.v1.InstanceStatus
-	13, // 4: hybridcloud.agent.v1.AgentMessage.ack:type_name -> hybridcloud.agent.v1.Ack
+	9,  // 3: hybridcloud.agent.v1.AgentMessage.instance_status:type_name -> hybridcloud.agent.v1.InstanceStatus
+	15, // 4: hybridcloud.agent.v1.AgentMessage.ack:type_name -> hybridcloud.agent.v1.Ack
 	4,  // 5: hybridcloud.agent.v1.Register.topology:type_name -> hybridcloud.agent.v1.Topology
-	14, // 6: hybridcloud.agent.v1.Heartbeat.sent_at:type_name -> google.protobuf.Timestamp
-	5,  // 7: hybridcloud.agent.v1.Topology.gpus:type_name -> hybridcloud.agent.v1.Gpu
-	6,  // 8: hybridcloud.agent.v1.Topology.nvlink_pairs:type_name -> hybridcloud.agent.v1.NvlinkPair
-	0,  // 9: hybridcloud.agent.v1.InstanceStatus.state:type_name -> hybridcloud.agent.v1.InstanceState
-	14, // 10: hybridcloud.agent.v1.InstanceStatus.observed_at:type_name -> google.protobuf.Timestamp
-	9,  // 11: hybridcloud.agent.v1.ControlMessage.register_ack:type_name -> hybridcloud.agent.v1.RegisterAck
-	10, // 12: hybridcloud.agent.v1.ControlMessage.create_instance:type_name -> hybridcloud.agent.v1.CreateInstance
-	11, // 13: hybridcloud.agent.v1.ControlMessage.destroy_instance:type_name -> hybridcloud.agent.v1.DestroyInstance
-	12, // 14: hybridcloud.agent.v1.ControlMessage.ping:type_name -> hybridcloud.agent.v1.Ping
-	14, // 15: hybridcloud.agent.v1.Ping.sent_at:type_name -> google.protobuf.Timestamp
-	1,  // 16: hybridcloud.agent.v1.AgentService.Stream:input_type -> hybridcloud.agent.v1.AgentMessage
-	8,  // 17: hybridcloud.agent.v1.AgentService.Stream:output_type -> hybridcloud.agent.v1.ControlMessage
-	17, // [17:18] is the sub-list for method output_type
-	16, // [16:17] is the sub-list for method input_type
-	16, // [16:16] is the sub-list for extension type_name
-	16, // [16:16] is the sub-list for extension extendee
-	0,  // [0:16] is the sub-list for field type_name
+	16, // 6: hybridcloud.agent.v1.Heartbeat.sent_at:type_name -> google.protobuf.Timestamp
+	7,  // 7: hybridcloud.agent.v1.Topology.gpus:type_name -> hybridcloud.agent.v1.Gpu
+	8,  // 8: hybridcloud.agent.v1.Topology.nvlink_pairs:type_name -> hybridcloud.agent.v1.NvlinkPair
+	5,  // 9: hybridcloud.agent.v1.Topology.profile:type_name -> hybridcloud.agent.v1.Profile
+	6,  // 10: hybridcloud.agent.v1.Profile.slots:type_name -> hybridcloud.agent.v1.SlotSpec
+	0,  // 11: hybridcloud.agent.v1.InstanceStatus.state:type_name -> hybridcloud.agent.v1.InstanceState
+	16, // 12: hybridcloud.agent.v1.InstanceStatus.observed_at:type_name -> google.protobuf.Timestamp
+	11, // 13: hybridcloud.agent.v1.ControlMessage.register_ack:type_name -> hybridcloud.agent.v1.RegisterAck
+	12, // 14: hybridcloud.agent.v1.ControlMessage.create_instance:type_name -> hybridcloud.agent.v1.CreateInstance
+	13, // 15: hybridcloud.agent.v1.ControlMessage.destroy_instance:type_name -> hybridcloud.agent.v1.DestroyInstance
+	14, // 16: hybridcloud.agent.v1.ControlMessage.ping:type_name -> hybridcloud.agent.v1.Ping
+	16, // 17: hybridcloud.agent.v1.Ping.sent_at:type_name -> google.protobuf.Timestamp
+	1,  // 18: hybridcloud.agent.v1.AgentService.Stream:input_type -> hybridcloud.agent.v1.AgentMessage
+	10, // 19: hybridcloud.agent.v1.AgentService.Stream:output_type -> hybridcloud.agent.v1.ControlMessage
+	19, // [19:20] is the sub-list for method output_type
+	18, // [18:19] is the sub-list for method input_type
+	18, // [18:18] is the sub-list for extension type_name
+	18, // [18:18] is the sub-list for extension extendee
+	0,  // [0:18] is the sub-list for field type_name
 }
 
 func init() { file_agent_proto_init() }
@@ -1256,7 +1417,7 @@ func file_agent_proto_init() {
 		(*AgentMessage_InstanceStatus)(nil),
 		(*AgentMessage_Ack)(nil),
 	}
-	file_agent_proto_msgTypes[7].OneofWrappers = []any{
+	file_agent_proto_msgTypes[9].OneofWrappers = []any{
 		(*ControlMessage_RegisterAck)(nil),
 		(*ControlMessage_CreateInstance)(nil),
 		(*ControlMessage_DestroyInstance)(nil),
@@ -1268,7 +1429,7 @@ func file_agent_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_agent_proto_rawDesc), len(file_agent_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   13,
+			NumMessages:   15,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

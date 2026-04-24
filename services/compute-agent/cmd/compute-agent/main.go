@@ -12,6 +12,7 @@ import (
 	"syscall"
 
 	"hybridcloud/services/compute-agent/internal/libvirt"
+	"hybridcloud/services/compute-agent/internal/profile"
 	"hybridcloud/services/compute-agent/internal/stream"
 	"hybridcloud/services/compute-agent/internal/topology"
 	"hybridcloud/services/compute-agent/internal/vm"
@@ -31,6 +32,7 @@ func main() {
 		baseImage    = flag.String("base-image", env("AGENT_BASE_IMAGE", ""), "backing qcow2 for new VM disks")
 		netName      = flag.String("network", env("AGENT_LIBVIRT_NETWORK", "default"), "libvirt network to attach VMs to")
 		diskGB       = flag.Int("disk-gb", envInt("AGENT_DISK_GB", 50), "per-VM virtual disk size in GiB (cloud-init growpart fills it on boot)")
+		profilePath  = flag.String("profile", env("AGENT_PROFILE", ""), "path to slot-layout YAML (see docs/specs/phase-1-mvp.md §GPU partitioning)")
 	)
 	flag.Parse()
 
@@ -48,11 +50,32 @@ func main() {
 
 	hostname, _ := os.Hostname()
 
+	var resolvedProfile *agentv1.Profile
+	if *profilePath != "" {
+		file, raw, err := profile.Load(*profilePath)
+		if err != nil {
+			log.Error("profile load", "err", err, "path", *profilePath)
+			os.Exit(2)
+		}
+		// Resolve with the host's actual GPU indices. When the topology
+		// collector can't reach nvidia-smi/sysfs (tests, degraded hosts),
+		// collector.Collect would still work, but profile validation needs
+		// some ground truth — probe sysfs now.
+		hostGPUIndices := detectGPUIndices(*fakeTopology)
+		res, err := profile.Resolve(file, raw, hostGPUIndices)
+		if err != nil {
+			log.Error("profile resolve", "err", err, "path", *profilePath)
+			os.Exit(2)
+		}
+		log.Info("profile loaded", "name", res.Name, "hash", res.Hash[:12], "slots", len(res.Slots))
+		resolvedProfile = res.Proto()
+	}
+
 	var collector topology.Collector
 	if *fakeTopology {
 		collector = topology.Empty()
 	} else {
-		collector = topology.LinuxCollector{}
+		collector = topology.LinuxCollector{Profile: resolvedProfile}
 	}
 
 	var onControl func(ctx context.Context, m *agentv1.ControlMessage, send func(*agentv1.AgentMessage))
@@ -120,4 +143,25 @@ func envInt(key string, fallback int) int {
 		return fallback
 	}
 	return n
+}
+
+// detectGPUIndices returns the GPU indices present on the host so profile
+// validation can reject layouts that reference GPUs that do not exist. Uses
+// the same sysfs path the production collector uses; fake mode returns
+// an empty slice so profile references fail deterministically (which is
+// fine because no real VM will be scheduled either).
+func detectGPUIndices(fakeTopology bool) []int32 {
+	if fakeTopology {
+		return nil
+	}
+	// Reuse the topology collector to avoid duplicating the sysfs walk.
+	top, err := topology.LinuxCollector{}.Collect(context.Background())
+	if err != nil || top == nil {
+		return nil
+	}
+	out := make([]int32, 0, len(top.Gpus))
+	for _, g := range top.Gpus {
+		out = append(out, g.Index)
+	}
+	return out
 }

@@ -19,6 +19,10 @@ type LinuxCollector struct {
 	NvidiaSmiPath string
 	// SysfsRoot overrides /sys for tests. Empty uses the real kernel root.
 	SysfsRoot string
+	// Profile is the resolved slot layout embedded on every report. May be
+	// nil when no profile is configured (the node registers but no slots
+	// will be seeded — useful for pre-production bring-up).
+	Profile *agentv1.Profile
 }
 
 // Collect satisfies Collector.
@@ -37,6 +41,7 @@ func (c LinuxCollector) Collect(ctx context.Context) (*agentv1.Topology, error) 
 	top := &agentv1.Topology{
 		Gpus:         gpus,
 		IommuEnabled: sysfs.IOMMUEnabled(),
+		Profile:      c.Profile,
 	}
 
 	for _, g := range top.Gpus {

@@ -54,3 +54,12 @@ update gpu_slots
 set status              = 'free',
     current_instance_id = null
 where id = any(sqlc.arg('ids')::uuid[]) and status = 'reserved';
+
+-- name: CountNonFreeSlotsForNode :one
+select count(*)::bigint from gpu_slots where node_id = $1 and status <> 'free';
+
+-- name: DeleteSlotsForNode :execrows
+delete from gpu_slots where node_id = $1;
+
+-- name: UpdateNodeProfileHash :exec
+update nodes set profile_hash = $2, updated_at = now() where id = $1;

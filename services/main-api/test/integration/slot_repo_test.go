@@ -170,6 +170,104 @@ func TestSlotRepo_ReleaseReservedRollsBack(t *testing.T) {
 // TestSlotRepo_ConcurrentReservation is the main correctness claim for the
 // advisory-lock design: N concurrent single-slot reservations against a
 // capacity-M pool yield exactly min(N, M) successes and no double-book.
+func TestSlotRepo_SyncFromProfile_FirstTime(t *testing.T) {
+	t.Parallel()
+
+	url := startPostgres(t)
+	migrateUp(t, url)
+
+	pool, err := pgxpool.New(context.Background(), url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+
+	ctx := context.Background()
+	q := dbstore.New(pool)
+	repo := slot.NewRepo(pool, q)
+	node := seedNode(t, ctx, q)
+
+	layout := []slot.ProfileSlot{
+		{SlotIndex: 0, GpuCount: 1, GpuIndices: []int32{0}},
+		{SlotIndex: 1, GpuCount: 1, GpuIndices: []int32{1}},
+	}
+	result, err := repo.SyncFromProfile(ctx, node.ID, "hash-abc", layout)
+	if err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	if result != slot.SyncReplaced {
+		t.Fatalf("expected SyncReplaced on empty node, got %v", result)
+	}
+	rows, _ := q.ListSlotsForNode(ctx, node.ID)
+	if len(rows) != 2 {
+		t.Fatalf("slots: got %d, want 2", len(rows))
+	}
+}
+
+func TestSlotRepo_SyncFromProfile_HashMatchIsNoop(t *testing.T) {
+	t.Parallel()
+
+	url := startPostgres(t)
+	migrateUp(t, url)
+	pool, _ := pgxpool.New(context.Background(), url)
+	defer pool.Close()
+
+	ctx := context.Background()
+	q := dbstore.New(pool)
+	repo := slot.NewRepo(pool, q)
+	node := seedNode(t, ctx, q)
+
+	layout := []slot.ProfileSlot{{SlotIndex: 0, GpuCount: 1, GpuIndices: []int32{0}}}
+	if _, err := repo.SyncFromProfile(ctx, node.ID, "hash-abc", layout); err != nil {
+		t.Fatal(err)
+	}
+	result, err := repo.SyncFromProfile(ctx, node.ID, "hash-abc", layout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result != slot.SyncUnchanged {
+		t.Fatalf("expected SyncUnchanged on identical hash, got %v", result)
+	}
+}
+
+func TestSlotRepo_SyncFromProfile_InUseSlotsBlockReplace(t *testing.T) {
+	t.Parallel()
+
+	url := startPostgres(t)
+	migrateUp(t, url)
+	pool, _ := pgxpool.New(context.Background(), url)
+	defer pool.Close()
+
+	ctx := context.Background()
+	q := dbstore.New(pool)
+	repo := slot.NewRepo(pool, q)
+	node := seedNode(t, ctx, q)
+
+	// Seed + bind one slot to an instance.
+	seedSlots(t, ctx, q, node.ID, 2, 1)
+	inst, _ := q.CreateInstance(ctx, dbstore.CreateInstanceParams{
+		NodeID: node.ID, Name: "busy", MemoryMb: 1024, Vcpus: 1,
+		GpuCount: 1, SlotIndices: []int32{0}, SshPubkeys: []string{},
+	})
+	res, _ := repo.Reserve(ctx, node.ID, 1, 1)
+	_ = repo.BindToInstance(ctx, res, inst.ID)
+
+	// Try to replace with a different layout.
+	layout := []slot.ProfileSlot{{SlotIndex: 0, GpuCount: 2, GpuIndices: []int32{0, 1}}}
+	result, err := repo.SyncFromProfile(ctx, node.ID, "new-hash", layout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result != slot.SyncDegraded {
+		t.Fatalf("expected SyncDegraded, got %v", result)
+	}
+	// Existing slots must not have been touched.
+	rows, _ := q.ListSlotsForNode(ctx, node.ID)
+	if len(rows) != 2 {
+		t.Fatalf("slots must be preserved while in use: got %d", len(rows))
+	}
+}
+
 func TestSlotRepo_ConcurrentReservation(t *testing.T) {
 	t.Parallel()
 

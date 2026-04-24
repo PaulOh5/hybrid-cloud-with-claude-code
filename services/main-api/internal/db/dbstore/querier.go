@@ -14,8 +14,10 @@ import (
 type Querier interface {
 	BindSlotToInstance(ctx context.Context, arg BindSlotToInstanceParams) (GpuSlot, error)
 	CountFreeSlotsByGPUCount(ctx context.Context, arg CountFreeSlotsByGPUCountParams) (int64, error)
+	CountNonFreeSlotsForNode(ctx context.Context, nodeID uuid.UUID) (int64, error)
 	CreateInstance(ctx context.Context, arg CreateInstanceParams) (Instance, error)
 	DeleteInstance(ctx context.Context, id uuid.UUID) error
+	DeleteSlotsForNode(ctx context.Context, nodeID uuid.UUID) (int64, error)
 	GetDefaultZone(ctx context.Context) (Zone, error)
 	GetInstance(ctx context.Context, id uuid.UUID) (Instance, error)
 	GetNode(ctx context.Context, id uuid.UUID) (Node, error)
@@ -41,6 +43,7 @@ type Querier interface {
 	ReserveFreeSlots(ctx context.Context, arg ReserveFreeSlotsParams) ([]GpuSlot, error)
 	TouchNodeHeartbeat(ctx context.Context, id uuid.UUID) error
 	UpdateInstanceState(ctx context.Context, arg UpdateInstanceStateParams) (Instance, error)
+	UpdateNodeProfileHash(ctx context.Context, arg UpdateNodeProfileHashParams) error
 	UpsertNode(ctx context.Context, arg UpsertNodeParams) (Node, error)
 }
 
