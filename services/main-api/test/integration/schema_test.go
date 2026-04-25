@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"io/fs"
+	"sync"
 	"testing"
 	"time"
 
@@ -21,6 +22,11 @@ import (
 	"hybridcloud/services/main-api/internal/db/dbstore"
 	"hybridcloud/services/main-api/internal/db/migrations"
 )
+
+// goose v3.27 mutates package-level globals (SetBaseFS, SetDialect) and Up/Down
+// read them. Parallel testcontainers tests race on those writes, so serialize
+// every goose call through this mutex.
+var gooseMu sync.Mutex
 
 func startPostgres(t *testing.T) string {
 	t.Helper()
@@ -67,6 +73,8 @@ func migrateUp(t *testing.T, url string) {
 		t.Fatalf("sub fs: %v", err)
 	}
 
+	gooseMu.Lock()
+	defer gooseMu.Unlock()
 	goose.SetBaseFS(sub)
 	if err := goose.SetDialect("postgres"); err != nil {
 		t.Fatalf("set dialect: %v", err)
@@ -96,6 +104,8 @@ func TestSchemaApply_UpDownIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sub fs: %v", err)
 	}
+	gooseMu.Lock()
+	defer gooseMu.Unlock()
 	goose.SetBaseFS(sub)
 
 	if err := goose.Down(dbh, "."); err != nil {

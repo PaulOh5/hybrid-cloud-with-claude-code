@@ -35,9 +35,9 @@ jobs:
       - name: go vet
         run: go vet ${{ env.GO_PATHS }}
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v9
         with:
-          version: v1.64.8
+          version: v2.5.0
           args: --timeout=5m ${{ env.GO_PATHS }}
 
   go-build:
