@@ -31,8 +31,11 @@ import (
 	"hybridcloud/services/main-api/internal/instance"
 	"hybridcloud/services/main-api/internal/node"
 	"hybridcloud/services/main-api/internal/slot"
+	"hybridcloud/services/main-api/internal/sshkeys"
 	"hybridcloud/services/main-api/internal/sshticket"
 	agentv1 "hybridcloud/shared/proto/agent/v1"
+
+	"github.com/google/uuid"
 )
 
 func main() {
@@ -103,11 +106,20 @@ func main() {
 	}()
 
 	// HTTP server.
+	sshKeysRepo := sshkeys.NewRepo(queries)
 	adminInstances := &api.InstanceHandlers{
 		Instances:  instances,
 		Nodes:      nodes,
 		Slots:      slots,
 		Dispatcher: registry,
+		ExtraSSHKeysForOwner: func(ctx context.Context, ownerID uuid.UUID) []string {
+			keys, err := sshKeysRepo.PubkeysForUser(ctx, ownerID)
+			if err != nil {
+				log.Warn("ssh_keys lookup", "user_id", ownerID, "err", err)
+				return nil
+			}
+			return keys
+		},
 	}
 	adminRouter := api.NewAdminRouter(
 		&api.AdminHandlers{Nodes: nodes},
@@ -145,6 +157,8 @@ func main() {
 	userRouter := api.NewUserRouter(api.UserHandlers{
 		Auth:      authHandlers,
 		Instances: api.NewUserInstanceHandlers(adminInstances),
+		Nodes:     &api.UserNodeHandlers{Nodes: nodes},
+		SSHKeys:   &api.UserSSHKeyHandlers{Keys: sshKeysRepo},
 	}, authRepo)
 
 	httpServer := &http.Server{

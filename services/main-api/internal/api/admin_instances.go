@@ -55,6 +55,11 @@ type InstanceHandlers struct {
 	Nodes      NodeGetter
 	Slots      SlotRepo
 	Dispatcher AgentDispatcher
+	// ExtraSSHKeysForOwner, when set, returns the user's persistently-stored
+	// SSH pubkeys at create time. Phase 8.3 wires this so user-created VMs
+	// get the dashboard-managed keys without the caller having to repeat
+	// them in the JSON body.
+	ExtraSSHKeysForOwner func(ctx context.Context, ownerID uuid.UUID) []string
 }
 
 // NodeGetter is the slice of node.Repo this handler depends on.
@@ -82,6 +87,7 @@ type InstanceView struct {
 	State        string    `json:"state"`
 	MemoryMb     int32     `json:"memory_mb"`
 	VCPUs        int32     `json:"vcpus"`
+	GPUCount     int32     `json:"gpu_count"`
 	SSHPubkeys   []string  `json:"ssh_pubkeys"`
 	VMInternalIP string    `json:"vm_internal_ip,omitempty"`
 	ErrorMessage string    `json:"error_message,omitempty"`
@@ -97,6 +103,7 @@ func toInstanceView(in dbstore.Instance) InstanceView {
 		State:        string(in.State),
 		MemoryMb:     in.MemoryMb,
 		VCPUs:        in.Vcpus,
+		GPUCount:     in.GpuCount,
 		SSHPubkeys:   in.SshPubkeys,
 		ErrorMessage: in.ErrorMessage,
 		CreatedAt:    in.CreatedAt.Time,
@@ -129,6 +136,9 @@ func (h *InstanceHandlers) Create(w http.ResponseWriter, r *http.Request) {
 
 // CreateForOwner is the user-facing entry: admin Create's logic, but the row
 // is stamped with the supplied OwnerID. Phase 7 calls this after auth.
+// Phase 8.3 also merges the user's stored SSH pubkeys into req.SSHPubkeys so
+// dashboard-managed keys flow into cloud-init without the JSON body
+// repeating them.
 func (h *InstanceHandlers) CreateForOwner(w http.ResponseWriter, r *http.Request, ownerID uuid.UUID) {
 	defer func() { _ = r.Body.Close() }()
 
@@ -137,7 +147,34 @@ func (h *InstanceHandlers) CreateForOwner(w http.ResponseWriter, r *http.Request
 		writeError(w, httpCode, errCode, errMsg)
 		return
 	}
+	if h.ExtraSSHKeysForOwner != nil {
+		extras := h.ExtraSSHKeysForOwner(r.Context(), ownerID)
+		req.SSHPubkeys = mergeSSHPubkeys(req.SSHPubkeys, extras)
+	}
 	h.runCreate(w, r, req, node, uuid.NullUUID{UUID: ownerID, Valid: true})
+}
+
+// mergeSSHPubkeys returns the union of two pubkey slices preserving order
+// and dropping exact-string duplicates. Cheap O(n+m) is fine for the small
+// number of keys per user.
+func mergeSSHPubkeys(a, b []string) []string {
+	seen := make(map[string]struct{}, len(a)+len(b))
+	out := make([]string, 0, len(a)+len(b))
+	for _, k := range a {
+		if _, ok := seen[k]; ok {
+			continue
+		}
+		seen[k] = struct{}{}
+		out = append(out, k)
+	}
+	for _, k := range b {
+		if _, ok := seen[k]; ok {
+			continue
+		}
+		seen[k] = struct{}{}
+		out = append(out, k)
+	}
+	return out
 }
 
 // runCreate implements the reservation → create → bind → dispatch sequence

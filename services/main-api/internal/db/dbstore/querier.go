@@ -16,16 +16,19 @@ type Querier interface {
 	CountFreeSlotsByGPUCount(ctx context.Context, arg CountFreeSlotsByGPUCountParams) (int64, error)
 	CountNonFreeSlotsForNode(ctx context.Context, nodeID uuid.UUID) (int64, error)
 	CreateInstance(ctx context.Context, arg CreateInstanceParams) (Instance, error)
+	CreateSSHKey(ctx context.Context, arg CreateSSHKeyParams) (SshKey, error)
 	CreateSession(ctx context.Context, arg CreateSessionParams) (Session, error)
 	CreateUser(ctx context.Context, arg CreateUserParams) (User, error)
 	DeleteExpiredSessions(ctx context.Context) (int64, error)
 	DeleteInstance(ctx context.Context, id uuid.UUID) error
+	DeleteSSHKeyForUser(ctx context.Context, arg DeleteSSHKeyForUserParams) (int64, error)
 	DeleteSessionByTokenHash(ctx context.Context, tokenHash string) error
 	DeleteSlotsForNode(ctx context.Context, nodeID uuid.UUID) (int64, error)
 	GetDefaultZone(ctx context.Context) (Zone, error)
 	GetInstance(ctx context.Context, id uuid.UUID) (Instance, error)
 	GetNode(ctx context.Context, id uuid.UUID) (Node, error)
 	GetNodeByName(ctx context.Context, nodeName string) (Node, error)
+	GetSSHKeyForUser(ctx context.Context, arg GetSSHKeyForUserParams) (SshKey, error)
 	GetSessionByTokenHash(ctx context.Context, tokenHash string) (Session, error)
 	GetUser(ctx context.Context, id uuid.UUID) (User, error)
 	GetUserByEmail(ctx context.Context, email string) (User, error)
@@ -34,6 +37,7 @@ type Querier interface {
 	ListInstanceEvents(ctx context.Context, instanceID uuid.UUID) ([]InstanceEvent, error)
 	ListInstances(ctx context.Context, ownerID uuid.NullUUID) ([]Instance, error)
 	ListNodes(ctx context.Context) ([]Node, error)
+	ListSSHKeysForUser(ctx context.Context, userID uuid.UUID) ([]SshKey, error)
 	ListSlotsForNode(ctx context.Context, nodeID uuid.UUID) ([]GpuSlot, error)
 	// pg_advisory_xact_lock serialises all reservations for the same node inside
 	// a single advisory-lock namespace derived from the node UUID. Held until

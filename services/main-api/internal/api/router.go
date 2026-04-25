@@ -32,6 +32,8 @@ func NewInternalRouter(deps SSHTicketDeps, internalToken string) http.Handler {
 type UserHandlers struct {
 	Auth      *AuthHandlers
 	Instances *UserInstanceHandlers
+	Nodes     *UserNodeHandlers
+	SSHKeys   *UserSSHKeyHandlers
 }
 
 // NewUserRouter wires the /api/v1/* user-facing endpoints. The outer mux
@@ -54,6 +56,14 @@ func NewUserRouter(h UserHandlers, resolver SessionResolver) http.Handler {
 		authed.HandleFunc("POST /api/v1/instances", h.Instances.Create)
 		authed.HandleFunc("GET /api/v1/instances/{id}", h.Instances.Get)
 		authed.HandleFunc("DELETE /api/v1/instances/{id}", h.Instances.Delete)
+	}
+	if h.Nodes != nil {
+		authed.HandleFunc("GET /api/v1/nodes", h.Nodes.List)
+	}
+	if h.SSHKeys != nil {
+		authed.HandleFunc("GET /api/v1/ssh-keys", h.SSHKeys.List)
+		authed.HandleFunc("POST /api/v1/ssh-keys", h.SSHKeys.Add)
+		authed.HandleFunc("DELETE /api/v1/ssh-keys/{id}", h.SSHKeys.Delete)
 	}
 	authedHandler := RequireUser(authed)
 
