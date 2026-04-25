@@ -16,12 +16,19 @@ type Querier interface {
 	CountFreeSlotsByGPUCount(ctx context.Context, arg CountFreeSlotsByGPUCountParams) (int64, error)
 	CountNonFreeSlotsForNode(ctx context.Context, nodeID uuid.UUID) (int64, error)
 	CreateInstance(ctx context.Context, arg CreateInstanceParams) (Instance, error)
+	CreateSession(ctx context.Context, arg CreateSessionParams) (Session, error)
+	CreateUser(ctx context.Context, arg CreateUserParams) (User, error)
+	DeleteExpiredSessions(ctx context.Context) (int64, error)
 	DeleteInstance(ctx context.Context, id uuid.UUID) error
+	DeleteSessionByTokenHash(ctx context.Context, tokenHash string) error
 	DeleteSlotsForNode(ctx context.Context, nodeID uuid.UUID) (int64, error)
 	GetDefaultZone(ctx context.Context) (Zone, error)
 	GetInstance(ctx context.Context, id uuid.UUID) (Instance, error)
 	GetNode(ctx context.Context, id uuid.UUID) (Node, error)
 	GetNodeByName(ctx context.Context, nodeName string) (Node, error)
+	GetSessionByTokenHash(ctx context.Context, tokenHash string) (Session, error)
+	GetUser(ctx context.Context, id uuid.UUID) (User, error)
+	GetUserByEmail(ctx context.Context, email string) (User, error)
 	InsertInstanceEvent(ctx context.Context, arg InsertInstanceEventParams) error
 	InsertSlot(ctx context.Context, arg InsertSlotParams) (GpuSlot, error)
 	ListInstanceEvents(ctx context.Context, instanceID uuid.UUID) ([]InstanceEvent, error)

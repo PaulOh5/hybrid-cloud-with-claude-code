@@ -53,6 +53,7 @@ func (f *fakeInstanceRepo) Create(_ context.Context, in instance.CreateInput) (d
 	now := time.Now()
 	row := &dbstore.Instance{
 		ID:          id,
+		OwnerID:     in.OwnerID,
 		NodeID:      in.NodeID,
 		Name:        in.Name,
 		State:       dbstore.InstanceStatePending,
@@ -100,11 +101,14 @@ func (f *fakeInstanceRepo) Delete(_ context.Context, id uuid.UUID) error {
 	return nil
 }
 
-func (f *fakeInstanceRepo) ListForOwner(_ context.Context, _ uuid.NullUUID) ([]dbstore.Instance, error) {
+func (f *fakeInstanceRepo) ListForOwner(_ context.Context, ownerID uuid.NullUUID) ([]dbstore.Instance, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	out := make([]dbstore.Instance, 0, len(f.rows))
 	for _, v := range f.rows {
+		if ownerID.Valid && (!v.OwnerID.Valid || v.OwnerID.UUID != ownerID.UUID) {
+			continue
+		}
 		out = append(out, *v)
 	}
 	return out, nil

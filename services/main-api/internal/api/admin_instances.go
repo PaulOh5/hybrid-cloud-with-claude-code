@@ -124,8 +124,28 @@ func (h *InstanceHandlers) Create(w http.ResponseWriter, r *http.Request) {
 		writeError(w, httpCode, errCode, errMsg)
 		return
 	}
+	h.runCreate(w, r, req, node, uuid.NullUUID{Valid: false})
+}
 
-	// Reserve slots up-front so the instance row captures slot_indices.
+// CreateForOwner is the user-facing entry: admin Create's logic, but the row
+// is stamped with the supplied OwnerID. Phase 7 calls this after auth.
+func (h *InstanceHandlers) CreateForOwner(w http.ResponseWriter, r *http.Request, ownerID uuid.UUID) {
+	defer func() { _ = r.Body.Close() }()
+
+	req, node, httpCode, errCode, errMsg := h.validateCreate(r)
+	if httpCode != 0 {
+		writeError(w, httpCode, errCode, errMsg)
+		return
+	}
+	h.runCreate(w, r, req, node, uuid.NullUUID{UUID: ownerID, Valid: true})
+}
+
+// runCreate implements the reservation → create → bind → dispatch sequence
+// shared by Create and CreateForOwner.
+func (h *InstanceHandlers) runCreate(
+	w http.ResponseWriter, r *http.Request,
+	req createInstanceRequest, node dbstore.Node, ownerID uuid.NullUUID,
+) {
 	reservation, passthroughPCI, httpCode, errCode, errMsg := h.reserveIfNeeded(r.Context(), req, node)
 	if httpCode != 0 {
 		writeError(w, httpCode, errCode, errMsg)
@@ -133,6 +153,7 @@ func (h *InstanceHandlers) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	inst, err := h.Instances.Create(r.Context(), instance.CreateInput{
+		OwnerID:     ownerID,
 		NodeID:      node.ID,
 		Name:        req.Name,
 		MemoryMiB:   req.MemoryMb,

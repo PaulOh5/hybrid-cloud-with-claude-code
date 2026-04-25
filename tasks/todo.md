@@ -53,10 +53,10 @@
 - [ ] **📋 Open Q P8 결정 필요 (6.4 전):** DNS 공급자·도메인 관리
 
 ## Phase 7 · User Accounts + Auth
-- [ ] **7.1** 사용자·세션 스키마 + 인증 엔드포인트 — bcrypt·쿠키·레이트 리밋 (M)
-- [ ] **7.2** 세션 미들웨어 + 사용자 컨텍스트 (S)
-- [ ] **7.3** 인스턴스 소유권 + RBAC — `owner_id` · 404 enumerate 방지 (S)
-- [ ] **✔ Checkpoint 7:** 두 유저 간 자원 격리, S3 조건 충족
+- [x] **7.1** 사용자·세션 스키마 + 인증 엔드포인트 — bcrypt·쿠키·레이트 리밋 (M)
+- [x] **7.2** 세션 미들웨어 + 사용자 컨텍스트 (S)
+- [x] **7.3** 인스턴스 소유권 + RBAC — `owner_id` · 404 enumerate 방지 (S)
+- [x] **✔ Checkpoint 7:** 두 유저 간 자원 격리, S3 조건 충족
 
 ## Phase 8 · Frontend
 - [ ] **8.1** Next.js 쉘 + 인증 플로우 UI — App Router·shadcn/ui·login·register (M)

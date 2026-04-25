@@ -20,6 +20,11 @@ type Config struct {
 	TicketTTL     time.Duration
 	HeartbeatTTL  time.Duration // how long after last_heartbeat we flip to offline
 	SweepInterval time.Duration
+
+	// Phase 7: user-facing auth.
+	SessionTTL   time.Duration
+	CookieSecure bool
+	CookieDomain string
 }
 
 // FromEnv reads variables with sensible Phase 1 defaults.
@@ -35,6 +40,10 @@ func FromEnv() (Config, error) {
 		TicketTTL:     durationEnv("MAIN_API_TICKET_TTL", 15*time.Second),
 		HeartbeatTTL:  durationEnv("MAIN_API_HEARTBEAT_TTL", 60*time.Second),
 		SweepInterval: durationEnv("MAIN_API_SWEEP_INTERVAL", 10*time.Second),
+
+		SessionTTL:   durationEnv("MAIN_API_SESSION_TTL", 7*24*time.Hour),
+		CookieSecure: boolEnv("MAIN_API_COOKIE_SECURE", false),
+		CookieDomain: os.Getenv("MAIN_API_COOKIE_DOMAIN"),
 	}
 
 	if c.DatabaseURL == "" {
@@ -61,6 +70,17 @@ func FromEnv() (Config, error) {
 func env(k, fallback string) string {
 	if v := os.Getenv(k); v != "" {
 		return v
+	}
+	return fallback
+}
+
+func boolEnv(k string, fallback bool) bool {
+	v := os.Getenv(k)
+	if v == "" {
+		return fallback
+	}
+	if b, err := strconv.ParseBool(v); err == nil {
+		return b
 	}
 	return fallback
 }

@@ -27,14 +27,62 @@ func NewInternalRouter(deps SSHTicketDeps, internalToken string) http.Handler {
 	return RequireInternalToken(internalToken)(mux)
 }
 
-// NewRouter combines admin + internal routes on a single mux so the cmd
-// layer wires one http.Server. Each prefix goes through its own bearer-
+// UserHandlers bundles the per-feature handler types attached to /api/v1/*.
+// Each field may be nil — only the wired-up groups are exposed.
+type UserHandlers struct {
+	Auth      *AuthHandlers
+	Instances *UserInstanceHandlers
+}
+
+// NewUserRouter wires the /api/v1/* user-facing endpoints. The outer mux
+// dispatches by pattern; LoadSession runs on every request so cookie data is
+// available, and RequireUser gates the authenticated subset.
+func NewUserRouter(h UserHandlers, resolver SessionResolver) http.Handler {
+	open := http.NewServeMux()
+	if h.Auth != nil {
+		open.HandleFunc("POST /api/v1/auth/register", h.Auth.Register)
+		open.HandleFunc("POST /api/v1/auth/login", h.Auth.Login)
+		open.HandleFunc("POST /api/v1/auth/logout", h.Auth.Logout)
+	}
+
+	authed := http.NewServeMux()
+	if h.Auth != nil {
+		authed.HandleFunc("GET /api/v1/auth/me", h.Auth.Me)
+	}
+	if h.Instances != nil {
+		authed.HandleFunc("GET /api/v1/instances", h.Instances.List)
+		authed.HandleFunc("POST /api/v1/instances", h.Instances.Create)
+		authed.HandleFunc("GET /api/v1/instances/{id}", h.Instances.Get)
+		authed.HandleFunc("DELETE /api/v1/instances/{id}", h.Instances.Delete)
+	}
+	authedHandler := RequireUser(authed)
+
+	root := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Routes registered on `open` win first (login/register/logout);
+		// the rest fall through to the authenticated mux. ServeMux exposes
+		// Handler() which returns a non-empty pattern only when a route
+		// matched.
+		if hh, pattern := open.Handler(r); pattern != "" {
+			hh.ServeHTTP(w, r)
+			return
+		}
+		authedHandler.ServeHTTP(w, r)
+	})
+
+	return LoadSession(resolver)(root)
+}
+
+// NewRouter combines admin + internal + user routes on a single mux so the
+// cmd layer wires one http.Server. Each prefix goes through its own bearer-
 // token middleware; the internal router stays off the public admin scope.
-func NewRouter(admin http.Handler, internal http.Handler) http.Handler {
+func NewRouter(admin http.Handler, internal http.Handler, user http.Handler) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("/admin/", admin)
 	if internal != nil {
 		mux.Handle("/internal/", internal)
+	}
+	if user != nil {
+		mux.Handle("/api/", user)
 	}
 	return mux
 }

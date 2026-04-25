@@ -23,6 +23,7 @@ import (
 	"google.golang.org/grpc"
 
 	"hybridcloud/services/main-api/internal/api"
+	"hybridcloud/services/main-api/internal/auth"
 	"hybridcloud/services/main-api/internal/config"
 	"hybridcloud/services/main-api/internal/db/dbstore"
 	"hybridcloud/services/main-api/internal/db/migrations"
@@ -102,14 +103,15 @@ func main() {
 	}()
 
 	// HTTP server.
+	adminInstances := &api.InstanceHandlers{
+		Instances:  instances,
+		Nodes:      nodes,
+		Slots:      slots,
+		Dispatcher: registry,
+	}
 	adminRouter := api.NewAdminRouter(
 		&api.AdminHandlers{Nodes: nodes},
-		&api.InstanceHandlers{
-			Instances:  instances,
-			Nodes:      nodes,
-			Slots:      slots,
-			Dispatcher: registry,
-		},
+		adminInstances,
 		cfg.AdminToken,
 	)
 	var internalRouter http.Handler
@@ -127,9 +129,27 @@ func main() {
 		}, cfg.InternalToken)
 		log.Info("ssh-ticket endpoint enabled", "ttl", cfg.TicketTTL)
 	}
+
+	// User-facing /api/v1/* router (Phase 7).
+	authRepo := auth.NewRepo(queries)
+	loginLimiter := auth.NewRateLimiter(auth.LoginRateLimit, auth.LoginRateWindow)
+	authHandlers := &api.AuthHandlers{
+		Users:   authRepo,
+		Limiter: loginLimiter,
+		Config: api.AuthConfig{
+			SessionTTL:   cfg.SessionTTL,
+			CookieSecure: cfg.CookieSecure,
+			CookieDomain: cfg.CookieDomain,
+		},
+	}
+	userRouter := api.NewUserRouter(api.UserHandlers{
+		Auth:      authHandlers,
+		Instances: api.NewUserInstanceHandlers(adminInstances),
+	}, authRepo)
+
 	httpServer := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           api.NewRouter(adminRouter, internalRouter),
+		Handler:           api.NewRouter(adminRouter, internalRouter, userRouter),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	go func() {
