@@ -1,0 +1,31 @@
+groups:
+  - name: hybrid-cloud
+    interval: 30s
+    rules:
+      - alert: NodeOffline
+        # main-api up + scrape working but no nodes online for ≥ 5 min
+        expr: max_over_time(up{job="main-api"}[5m]) == 1 and absent(instance_total{state="running"} > 0)
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "No instances are running for at least 5 minutes."
+
+      - alert: HighAPIErrorRate
+        expr: |
+          (sum by (route) (rate(api_request_duration_seconds_count{status=~"5.."}[5m])))
+          / (sum by (route) (rate(api_request_duration_seconds_count[5m])))
+          > 0.01
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "API 5xx rate above 1% for 5 minutes."
+
+      - alert: ScrapeDown
+        expr: up == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Prometheus cannot scrape {{ $labels.job }}."

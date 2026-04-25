@@ -31,6 +31,7 @@ import (
 	"hybridcloud/services/main-api/internal/db/migrations"
 	grpcsrv "hybridcloud/services/main-api/internal/grpc"
 	"hybridcloud/services/main-api/internal/instance"
+	"hybridcloud/services/main-api/internal/metrics"
 	"hybridcloud/services/main-api/internal/node"
 	"hybridcloud/services/main-api/internal/slot"
 	"hybridcloud/services/main-api/internal/sshkeys"
@@ -38,6 +39,7 @@ import (
 	agentv1 "hybridcloud/shared/proto/agent/v1"
 
 	"github.com/google/uuid"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 func main() {
@@ -168,11 +170,27 @@ func main() {
 		Nodes:     &api.UserNodeHandlers{Nodes: nodes},
 		SSHKeys:   &api.UserSSHKeyHandlers{Keys: sshKeysRepo},
 		Credits:   &api.UserCreditHandlers{Credits: creditRepo},
+		// Phase 10.1 — admin routes also live under /api/v1/* so the
+		// dashboard can reach them with the session cookie.
+		Admin:          &api.SessionAdminHandlers{Queries: queries},
+		AdminInstances: adminInstances,
+		AdminCredits:   adminCredits,
+		AdminNodes:     &api.AdminHandlers{Nodes: nodes},
 	}, authRepo)
+
+	// Metrics (Phase 10.2) — register a private registry, attach /metrics to
+	// the same HTTP listener, and start a domain-state refresher.
+	metricsReg := prometheus.NewRegistry()
+	collectors := metrics.NewCollectors(metricsReg)
+
+	mainHandler := api.NewRouter(adminRouter, internalRouter, userRouter)
+	muxWithMetrics := http.NewServeMux()
+	muxWithMetrics.Handle("/metrics", metrics.Handler(metricsReg))
+	muxWithMetrics.Handle("/", collectors.HTTPMiddleware("api")(mainHandler))
 
 	httpServer := &http.Server{
 		Addr:              cfg.HTTPAddr,
-		Handler:           api.NewRouter(adminRouter, internalRouter, userRouter),
+		Handler:           muxWithMetrics,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	go func() {
@@ -193,6 +211,7 @@ func main() {
 	}()
 
 	startBillingWorker(ctx, log, &wg, cfg, queries, creditRepo, registry)
+	startMetricsRefresher(ctx, log, &wg, queries, collectors)
 
 	<-ctx.Done()
 	log.Info("shutting down")
@@ -256,6 +275,29 @@ func startBillingWorker(
 		log.Info("billing worker started", "tick", cfg.BillingTick, "rates", cfg.BillingRatesPath)
 		if err := w.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 			log.Error("billing worker", "err", err)
+		}
+	}()
+}
+
+// startMetricsRefresher spawns the Phase 10.2 domain-state gauge sampler.
+func startMetricsRefresher(
+	ctx context.Context,
+	log *slog.Logger,
+	wg *sync.WaitGroup,
+	queries *dbstore.Queries,
+	collectors *metrics.Collectors,
+) {
+	r := &metrics.DomainRefresher{
+		Queries:  queries,
+		Coll:     collectors,
+		Interval: 15 * time.Second,
+		Log:      log,
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if err := r.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			log.Error("metrics refresher", "err", err)
 		}
 	}()
 }

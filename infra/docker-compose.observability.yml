@@ -1,0 +1,48 @@
+# Phase 10.2 — Prometheus + Grafana scaffold for local observability.
+#
+# Usage from repo root:
+#   docker compose -f infra/docker-compose.observability.yml up -d
+#
+# Prometheus scrapes the host's main-api/compute-agent/ssh-proxy /metrics
+# endpoints (assumes they listen on host ports 8080/8082/8083 — adjust if
+# the deployment binds elsewhere). Grafana auto-provisions Prometheus as a
+# data source plus the starter "Hybrid Cloud Overview" dashboard.
+
+services:
+  prometheus:
+    image: prom/prometheus:v2.55.0
+    container_name: hybrid-prometheus
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/rules.yml:/etc/prometheus/rules.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--web.enable-lifecycle"
+
+  grafana:
+    image: grafana/grafana:11.5.0
+    container_name: hybrid-grafana
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+    ports:
+      - "3001:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      # Operator should rotate after first login.
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+
+volumes:
+  prometheus-data:
+  grafana-data:

@@ -47,7 +47,13 @@ type Querier interface {
 	ListInstances(ctx context.Context, ownerID uuid.NullUUID) ([]Instance, error)
 	ListNodes(ctx context.Context) ([]Node, error)
 	ListSSHKeysForUser(ctx context.Context, userID uuid.UUID) ([]SshKey, error)
+	// Slot view across all nodes — admin needs the global picture, not per-node.
+	ListSlotsForAdminView(ctx context.Context) ([]ListSlotsForAdminViewRow, error)
 	ListSlotsForNode(ctx context.Context, nodeID uuid.UUID) ([]GpuSlot, error)
+	// Phase 10.1 admin dashboard: users + cached balance + active instance count.
+	// Active = not in terminal state (stopped/failed) so admins see "currently in
+	// use" without seeing the deletion graveyard.
+	ListUsersAdminView(ctx context.Context, limit int32) ([]ListUsersAdminViewRow, error)
 	// 잔액 ≤ 0 사용자 — 9.3 게이트가 stop dispatch 대상으로 사용.
 	ListUsersWithNegativeBalance(ctx context.Context) ([]uuid.UUID, error)
 	// pg_advisory_xact_lock serialises all reservations for the same node inside

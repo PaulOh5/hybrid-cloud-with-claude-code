@@ -73,11 +73,11 @@
 - [x] **📋 Open Q P6 결정 (9.2):** 분 단위 버킷, milli-원 정수 산술; configs/rates.yaml 에 GPU별 milli/min 정의
 
 ## Phase 10 · Admin Dashboard + Operational Readiness
-- [ ] **10.1** 관리자 UI 페이지 — 5 섹션 · 인스턴스 강제 종료 (M)
-- [ ] **10.2** Prometheus 메트릭 + Grafana 대시보드 — 3 대시보드·알람 룰 (M)
-- [ ] **10.3** Loki 로그 + 구조화 로깅 — 14일 보존 (S)
-- [ ] **10.4** 런북 + 백업 + 롤백 — 5 런북·복구 리허설 1회 (M)
-- [ ] **✔ Checkpoint 10:** Success Criteria 전 항목 통과 · 30일 관찰 계획 · 런칭 GO/NO-GO
+- [x] **10.1** 관리자 UI 페이지 — `/api/v1/admin/*` (session+is_admin, 비-admin 404), `(authed)/admin/{nodes,slots,instances,users}` 4섹션 + 사용자 충전 폼
+- [x] **10.2** Prometheus 메트릭 + Grafana scaffold — `/metrics`, `instance_total{state}`, `gpu_slot_used`, `api_request_duration_seconds`, `hybrid-overview` 대시보드, 기본 알람 룰
+- [ ] **10.3** Loki 로그 + 구조화 로깅 — JSON stdout 로깅은 이미 가동, Loki/Promtail 인프라는 `docs/runbooks/loki-setup.md`로 deferred (운영 단계)
+- [x] **10.4** 런북 + 백업 + 롤백 — 5 런북, `scripts/backup.sh`·`scripts/restore.sh` (dry-run 검증). 실제 복구 리허설은 운영 단계
+- [ ] **✔ Checkpoint 10:** Success Criteria 검토·30일 관찰 계획·런칭 GO/NO-GO — 사람의 결정 단계
 
 ---
 

@@ -33,6 +33,14 @@ export default async function AuthedLayout({
             >
               SSH 키
             </Link>
+            {user.is_admin && (
+              <Link
+                href="/admin"
+                className="font-medium text-amber-700 hover:text-amber-900 dark:text-amber-400 dark:hover:text-amber-300"
+              >
+                관리자
+              </Link>
+            )}
             <span className="text-zinc-500 dark:text-zinc-500">{user.email}</span>
             <LogoutButton />
           </nav>

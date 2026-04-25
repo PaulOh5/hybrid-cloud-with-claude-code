@@ -39,6 +39,20 @@ type UserHandlers struct {
 	Nodes     *UserNodeHandlers
 	SSHKeys   *UserSSHKeyHandlers
 	Credits   *UserCreditHandlers
+	// Admin endpoints living under /api/v1/admin/* — session-authenticated
+	// + is_admin gated. Phase 10.1 wires this so the dashboard can drive
+	// node/instance/user/credit screens without sharing the bearer token
+	// with the browser.
+	Admin *SessionAdminHandlers
+	// AdminInstances reuses the bearer-token admin instance handlers under
+	// /api/v1/admin/instances so an admin user can list/destroy across all
+	// owners.
+	AdminInstances *InstanceHandlers
+	// AdminCredits reuses POST /admin/users/{id}/credits semantics under
+	// the session-auth path.
+	AdminCredits *AdminCreditHandlers
+	// AdminNodes lists nodes from the same source as /admin/nodes.
+	AdminNodes *AdminHandlers
 }
 
 // NewUserRouter wires the /api/v1/* user-facing endpoints. The outer mux
@@ -75,13 +89,39 @@ func NewUserRouter(h UserHandlers, resolver SessionResolver) http.Handler {
 	}
 	authedHandler := RequireUser(authed)
 
+	// Admin section: same session check + is_admin guard. Mounted on its
+	// own mux so RequireAdmin only wraps these routes (other authenticated
+	// routes stay reachable for non-admin users).
+	adminMux := http.NewServeMux()
+	if h.AdminNodes != nil {
+		adminMux.HandleFunc("GET /api/v1/admin/nodes", h.AdminNodes.ListNodes)
+	}
+	if h.AdminInstances != nil {
+		adminMux.HandleFunc("GET /api/v1/admin/instances", h.AdminInstances.List)
+		adminMux.HandleFunc("DELETE /api/v1/admin/instances/{id}", h.AdminInstances.Delete)
+	}
+	if h.Admin != nil {
+		adminMux.HandleFunc("GET /api/v1/admin/users", h.Admin.ListUsers)
+		adminMux.HandleFunc("GET /api/v1/admin/slots", h.Admin.ListSlots)
+	}
+	if h.AdminCredits != nil {
+		adminMux.HandleFunc("POST /api/v1/admin/users/{id}/credits", h.AdminCredits.Recharge)
+		adminMux.HandleFunc("GET /api/v1/admin/users/{id}/credits", h.AdminCredits.Balance)
+	}
+	adminHandler := RequireUser(RequireAdmin(adminMux))
+
 	root := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Routes registered on `open` win first (login/register/logout);
-		// the rest fall through to the authenticated mux. ServeMux exposes
-		// Handler() which returns a non-empty pattern only when a route
-		// matched.
+		// admin routes go to the admin-gated mux; everything else falls
+		// through to the authenticated mux. ServeMux's Handler() returns a
+		// non-empty pattern only when a route matched.
 		if hh, pattern := open.Handler(r); pattern != "" {
 			hh.ServeHTTP(w, r)
+			return
+		}
+		if hh, pattern := adminMux.Handler(r); pattern != "" {
+			_ = hh
+			adminHandler.ServeHTTP(w, r)
 			return
 		}
 		authedHandler.ServeHTTP(w, r)
