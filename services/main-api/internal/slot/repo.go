@@ -33,11 +33,31 @@ type TxBeginner interface {
 type Repo struct {
 	beg     TxBeginner
 	queries *dbstore.Queries
+	log     reservelog
 }
+
+// reservelog is a tiny narrowing of *slog.Logger so the package doesn't take
+// a hard dep when not needed.
+type reservelog interface {
+	Info(msg string, args ...any)
+}
+
+type noopLog struct{}
+
+func (noopLog) Info(string, ...any) {}
 
 // NewRepo wires a Repo against the pgx pool + sqlc queries.
 func NewRepo(beg TxBeginner, queries *dbstore.Queries) *Repo {
-	return &Repo{beg: beg, queries: queries}
+	return &Repo{beg: beg, queries: queries, log: noopLog{}}
+}
+
+// WithLogger returns a Repo that logs reservation outcomes. Phase 10 follow-
+// up — the bug where Reserve returned 2 slots for count=1 was diagnosed via
+// these traces, so we leave the hook in place.
+func (r *Repo) WithLogger(log reservelog) *Repo {
+	cp := *r
+	cp.log = log
+	return &cp
 }
 
 // Reservation is the return value of Reserve. Slots holds the full sqlc rows
@@ -89,6 +109,17 @@ func (r *Repo) Reserve(ctx context.Context, nodeID uuid.UUID, gpuSize, count int
 		if err != nil {
 			return fmt.Errorf("reserve: %w", err)
 		}
+		indices := make([]int32, len(slots))
+		for i, s := range slots {
+			indices[i] = s.SlotIndex
+		}
+		r.log.Info("slot reservation",
+			"node_id", nodeID,
+			"gpu_size", gpuSize,
+			"count_requested", count,
+			"slots_returned", len(slots),
+			"slot_indices", indices,
+		)
 		if int64(len(slots)) < int64(count) {
 			// Not enough free — abort so the reservation rolls back.
 			return fmt.Errorf("%w: have %d, need %d", ErrNoFreeSlots, len(slots), count)

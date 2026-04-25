@@ -197,18 +197,20 @@ func (q *Queries) ReleaseSlotsForInstance(ctx context.Context, currentInstanceID
 }
 
 const reserveFreeSlots = `-- name: ReserveFreeSlots :many
-update gpu_slots s
-set status = 'reserved'
-where s.id in (
-    select inner_s.id from gpu_slots inner_s
-    where inner_s.node_id = $1 and inner_s.status = 'free' and inner_s.gpu_count = $2
+with picked as (
+    select gs.id from gpu_slots gs
+    where gs.node_id = $1 and gs.status = 'free' and gs.gpu_count = $2
     order by
-        case when inner_s.nvlink_domain <> '' then 0 else 1 end,
-        inner_s.nvlink_domain,
-        inner_s.slot_index
+        case when gs.nvlink_domain <> '' then 0 else 1 end,
+        gs.nvlink_domain,
+        gs.slot_index
     limit $3
     for update
 )
+update gpu_slots s
+set status = 'reserved'
+from picked
+where s.id = picked.id
 returning s.id, s.node_id, s.slot_index, s.gpu_count, s.gpu_indices, s.nvlink_domain, s.status, s.current_instance_id
 `
 
@@ -225,6 +227,11 @@ type ReserveFreeSlotsParams struct {
 // Phase 5 ordering: prefer slots whose GPUs share an NVLink domain so
 // multi-GPU VMs land on interconnected GPUs when a choice exists. Tie-break
 // by slot_index for deterministic selection.
+//
+// CTE form (rather than `id in (subquery LIMIT N FOR UPDATE)`) is required:
+// the planner can re-evaluate the IN-subquery per outer row, silently
+// breaking LIMIT and over-reserving slots. PostgreSQL materialises CTEs that
+// perform FOR UPDATE / UPDATE, so LIMIT $3 actually holds.
 func (q *Queries) ReserveFreeSlots(ctx context.Context, arg ReserveFreeSlotsParams) ([]GpuSlot, error) {
 	rows, err := q.db.Query(ctx, reserveFreeSlots, arg.NodeID, arg.GpuCount, arg.Limit)
 	if err != nil {

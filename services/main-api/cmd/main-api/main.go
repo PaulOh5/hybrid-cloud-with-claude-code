@@ -70,7 +70,7 @@ func main() {
 	queries := dbstore.New(pool)
 	nodes := node.NewDBRepo(queries)
 	instances := instance.NewRepo(pool, queries)
-	slots := slot.NewRepo(pool, queries)
+	slots := slot.NewRepo(pool, queries).WithLogger(log)
 
 	zoneID, err := nodes.DefaultZoneID(ctx)
 	if err != nil {

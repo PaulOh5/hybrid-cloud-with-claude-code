@@ -72,6 +72,11 @@ type Querier interface {
 	// Phase 5 ordering: prefer slots whose GPUs share an NVLink domain so
 	// multi-GPU VMs land on interconnected GPUs when a choice exists. Tie-break
 	// by slot_index for deterministic selection.
+	//
+	// CTE form (rather than `id in (subquery LIMIT N FOR UPDATE)`) is required:
+	// the planner can re-evaluate the IN-subquery per outer row, silently
+	// breaking LIMIT and over-reserving slots. PostgreSQL materialises CTEs that
+	// perform FOR UPDATE / UPDATE, so LIMIT $3 actually holds.
 	ReserveFreeSlots(ctx context.Context, arg ReserveFreeSlotsParams) ([]GpuSlot, error)
 	TouchNodeHeartbeat(ctx context.Context, id uuid.UUID) error
 	UpdateInstanceState(ctx context.Context, arg UpdateInstanceStateParams) (Instance, error)
