@@ -60,6 +60,11 @@ type InstanceHandlers struct {
 	// get the dashboard-managed keys without the caller having to repeat
 	// them in the JSON body.
 	ExtraSSHKeysForOwner func(ctx context.Context, ownerID uuid.UUID) []string
+	// BalanceForOwner, when set, returns the user's current balance in
+	// milli-원. Phase 9.3 uses this to reject create attempts from users
+	// whose balance has run out (402). Nil means the gate is disabled —
+	// admin-created instances bypass the gate by definition.
+	BalanceForOwner func(ctx context.Context, ownerID uuid.UUID) (int64, error)
 }
 
 // NodeGetter is the slice of node.Repo this handler depends on.
@@ -138,7 +143,7 @@ func (h *InstanceHandlers) Create(w http.ResponseWriter, r *http.Request) {
 // is stamped with the supplied OwnerID. Phase 7 calls this after auth.
 // Phase 8.3 also merges the user's stored SSH pubkeys into req.SSHPubkeys so
 // dashboard-managed keys flow into cloud-init without the JSON body
-// repeating them.
+// repeating them. Phase 9.3 rejects with 402 if the owner's balance is ≤ 0.
 func (h *InstanceHandlers) CreateForOwner(w http.ResponseWriter, r *http.Request, ownerID uuid.UUID) {
 	defer func() { _ = r.Body.Close() }()
 
@@ -146,6 +151,18 @@ func (h *InstanceHandlers) CreateForOwner(w http.ResponseWriter, r *http.Request
 	if httpCode != 0 {
 		writeError(w, httpCode, errCode, errMsg)
 		return
+	}
+	if h.BalanceForOwner != nil {
+		balance, err := h.BalanceForOwner(r.Context(), ownerID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "balance_lookup", err.Error())
+			return
+		}
+		if balance <= 0 {
+			writeError(w, http.StatusPaymentRequired, "insufficient_balance",
+				"credit balance must be positive to create an instance")
+			return
+		}
 	}
 	if h.ExtraSSHKeysForOwner != nil {
 		extras := h.ExtraSSHKeysForOwner(r.Context(), ownerID)

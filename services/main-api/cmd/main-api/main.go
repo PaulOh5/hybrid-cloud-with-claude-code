@@ -24,7 +24,9 @@ import (
 
 	"hybridcloud/services/main-api/internal/api"
 	"hybridcloud/services/main-api/internal/auth"
+	"hybridcloud/services/main-api/internal/billing"
 	"hybridcloud/services/main-api/internal/config"
+	"hybridcloud/services/main-api/internal/credit"
 	"hybridcloud/services/main-api/internal/db/dbstore"
 	"hybridcloud/services/main-api/internal/db/migrations"
 	grpcsrv "hybridcloud/services/main-api/internal/grpc"
@@ -107,6 +109,7 @@ func main() {
 
 	// HTTP server.
 	sshKeysRepo := sshkeys.NewRepo(queries)
+	creditRepo := credit.NewRepo(pool, queries)
 	adminInstances := &api.InstanceHandlers{
 		Instances:  instances,
 		Nodes:      nodes,
@@ -120,10 +123,15 @@ func main() {
 			}
 			return keys
 		},
+		BalanceForOwner: func(ctx context.Context, ownerID uuid.UUID) (int64, error) {
+			return creditRepo.Balance(ctx, ownerID)
+		},
 	}
+	adminCredits := &api.AdminCreditHandlers{Credits: creditRepo}
 	adminRouter := api.NewAdminRouter(
 		&api.AdminHandlers{Nodes: nodes},
 		adminInstances,
+		adminCredits,
 		cfg.AdminToken,
 	)
 	var internalRouter http.Handler
@@ -159,6 +167,7 @@ func main() {
 		Instances: api.NewUserInstanceHandlers(adminInstances),
 		Nodes:     &api.UserNodeHandlers{Nodes: nodes},
 		SSHKeys:   &api.UserSSHKeyHandlers{Keys: sshKeysRepo},
+		Credits:   &api.UserCreditHandlers{Credits: creditRepo},
 	}, authRepo)
 
 	httpServer := &http.Server{
@@ -182,6 +191,8 @@ func main() {
 			log.Error("sweeper", "err", err)
 		}
 	}()
+
+	startBillingWorker(ctx, log, &wg, cfg, queries, creditRepo, registry)
 
 	<-ctx.Done()
 	log.Info("shutting down")
@@ -210,4 +221,41 @@ func migrate(ctx context.Context, url string) error {
 		return err
 	}
 	return goose.UpContext(ctx, dbh, ".")
+}
+
+// startBillingWorker spawns the Phase 9 billing worker iff a rates path is
+// configured. Empty path disables billing entirely (handy for local dev).
+func startBillingWorker(
+	ctx context.Context,
+	log *slog.Logger,
+	wg *sync.WaitGroup,
+	cfg config.Config,
+	queries *dbstore.Queries,
+	creditRepo *credit.Repo,
+	registry *grpcsrv.AgentRegistry,
+) {
+	if cfg.BillingRatesPath == "" {
+		return
+	}
+	rates, err := billing.LoadRates(cfg.BillingRatesPath)
+	if err != nil {
+		log.Error("load rates", "path", cfg.BillingRatesPath, "err", err)
+		os.Exit(2)
+	}
+	w := &billing.Worker{
+		Instances:  queries,
+		Credits:    creditRepo,
+		Rates:      rates,
+		Dispatcher: registry,
+		Tick:       cfg.BillingTick,
+		Log:        log,
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		log.Info("billing worker started", "tick", cfg.BillingTick, "rates", cfg.BillingRatesPath)
+		if err := w.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			log.Error("billing worker", "err", err)
+		}
+	}()
 }

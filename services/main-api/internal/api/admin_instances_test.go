@@ -159,6 +159,7 @@ func makeRouter(t *testing.T, nodes api.NodeGetter, insts api.InstanceRepo, disp
 	return api.NewAdminRouter(
 		&api.AdminHandlers{Nodes: &fakeRepo{}},
 		&api.InstanceHandlers{Instances: insts, Nodes: nodes, Dispatcher: disp},
+		nil,
 		"tok",
 	)
 }
@@ -168,6 +169,7 @@ func makeRouterWithSlots(t *testing.T, nodes api.NodeGetter, insts api.InstanceR
 	return api.NewAdminRouter(
 		&api.AdminHandlers{Nodes: &fakeRepo{}},
 		&api.InstanceHandlers{Instances: insts, Nodes: nodes, Slots: slots, Dispatcher: disp},
+		nil,
 		"tok",
 	)
 }

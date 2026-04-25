@@ -1,0 +1,13 @@
+# Phase 9 billing rate table — milli-원 per minute, indexed by GPU count.
+#
+# Why milli-원: integer math, no float drift, headroom for sub-원 pricing
+# (1,000원 / hour ÷ 60 minutes = 16.667원/min, exact at milli precision).
+#
+# Caveat (Phase 9.2): the billing worker bills full minute buckets, so an
+# instance running 30s gets billed for the bucket it touched. Per-second
+# accuracy is a Phase 9 follow-up.
+gpu_rates_milli_per_minute:
+  0: 100        # CPU-only — token charge so credit gate still triggers
+  1: 16667      # ≈1,000원 / h
+  2: 33333      # ≈2,000원 / h
+  4: 66667      # ≈4,000원 / h

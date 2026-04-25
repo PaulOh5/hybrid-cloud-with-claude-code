@@ -24,6 +24,8 @@ type Querier interface {
 	DeleteSSHKeyForUser(ctx context.Context, arg DeleteSSHKeyForUserParams) (int64, error)
 	DeleteSessionByTokenHash(ctx context.Context, tokenHash string) error
 	DeleteSlotsForNode(ctx context.Context, nodeID uuid.UUID) (int64, error)
+	// 사용자 잔액 row. 없으면 pgx.ErrNoRows.
+	GetCredits(ctx context.Context, userID uuid.UUID) (Credit, error)
 	GetDefaultZone(ctx context.Context) (Zone, error)
 	GetInstance(ctx context.Context, id uuid.UUID) (Instance, error)
 	GetNode(ctx context.Context, id uuid.UUID) (Node, error)
@@ -32,13 +34,22 @@ type Querier interface {
 	GetSessionByTokenHash(ctx context.Context, tokenHash string) (Session, error)
 	GetUser(ctx context.Context, id uuid.UUID) (User, error)
 	GetUserByEmail(ctx context.Context, email string) (User, error)
+	// 원장 entry 추가. unique(idempotency_key) 충돌은 caller가 23505로 처리.
+	InsertCreditLedgerEntry(ctx context.Context, arg InsertCreditLedgerEntryParams) (CreditLedger, error)
 	InsertInstanceEvent(ctx context.Context, arg InsertInstanceEventParams) error
 	InsertSlot(ctx context.Context, arg InsertSlotParams) (GpuSlot, error)
+	// billing worker가 매 tick에 호출. owner_id 가 null인 admin/test 인스턴스는
+	// 청구 대상에서 제외. updated_at 은 어떤 시점부터 청구할지 계산용 (state
+	// 가 running 으로 바뀐 시각 ~).
+	ListBillableRunningInstances(ctx context.Context) ([]ListBillableRunningInstancesRow, error)
+	ListCreditLedgerEntries(ctx context.Context, arg ListCreditLedgerEntriesParams) ([]CreditLedger, error)
 	ListInstanceEvents(ctx context.Context, instanceID uuid.UUID) ([]InstanceEvent, error)
 	ListInstances(ctx context.Context, ownerID uuid.NullUUID) ([]Instance, error)
 	ListNodes(ctx context.Context) ([]Node, error)
 	ListSSHKeysForUser(ctx context.Context, userID uuid.UUID) ([]SshKey, error)
 	ListSlotsForNode(ctx context.Context, nodeID uuid.UUID) ([]GpuSlot, error)
+	// 잔액 ≤ 0 사용자 — 9.3 게이트가 stop dispatch 대상으로 사용.
+	ListUsersWithNegativeBalance(ctx context.Context) ([]uuid.UUID, error)
 	// pg_advisory_xact_lock serialises all reservations for the same node inside
 	// a single advisory-lock namespace derived from the node UUID. Held until
 	// COMMIT/ROLLBACK.
@@ -59,6 +70,8 @@ type Querier interface {
 	TouchNodeHeartbeat(ctx context.Context, id uuid.UUID) error
 	UpdateInstanceState(ctx context.Context, arg UpdateInstanceStateParams) (Instance, error)
 	UpdateNodeProfileHash(ctx context.Context, arg UpdateNodeProfileHashParams) error
+	// 잔액 캐시 누적 갱신. 새 사용자면 row 생성.
+	UpsertCredits(ctx context.Context, arg UpsertCreditsParams) error
 	UpsertNode(ctx context.Context, arg UpsertNodeParams) (Node, error)
 }
 

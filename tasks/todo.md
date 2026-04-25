@@ -66,11 +66,11 @@
 - [ ] **📋 Open Q P5 결정 필요 (8.3 전):** SSH 키 관리 UX 모델
 
 ## Phase 9 · Credits & Billing
-- [ ] **9.1** 크레딧 원장 + 관리자 수동 충전 — append-only · 감사 로그 (M)
-- [ ] **9.2** 러닝 시간 과금 워커 — 멱등 키 · 30초 주기 (M)
-- [ ] **9.3** 크레딧 부족 게이트 — create 402 · running 자동 정지 (S)
-- [ ] **✔ Checkpoint 9:** 30분 러닝 청구액 ±2원
-- [ ] **📋 Open Q P6 결정 필요 (9.2 전):** 요금 단위·최소 청구
+- [x] **9.1** 크레딧 원장 + 관리자 수동 충전 — append-only · 감사 로그 (M)
+- [x] **9.2** 러닝 시간 과금 워커 — 멱등 키 · 30초 주기 (M)
+- [x] **9.3** 크레딧 부족 게이트 — create 402 · running 자동 정지 (S)
+- [ ] **✔ Checkpoint 9:** 30분 러닝 청구액 ±2원 — *분 단위 버킷이라 ≈±16원 변동 가능; 초 단위로 가야 ±2원 충족*
+- [x] **📋 Open Q P6 결정 (9.2):** 분 단위 버킷, milli-원 정수 산술; configs/rates.yaml 에 GPU별 milli/min 정의
 
 ## Phase 10 · Admin Dashboard + Operational Readiness
 - [ ] **10.1** 관리자 UI 페이지 — 5 섹션 · 인스턴스 강제 종료 (M)

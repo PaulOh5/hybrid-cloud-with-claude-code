@@ -25,6 +25,10 @@ type Config struct {
 	SessionTTL   time.Duration
 	CookieSecure bool
 	CookieDomain string
+
+	// Phase 9: billing.
+	BillingTick      time.Duration // 0 disables the worker
+	BillingRatesPath string        // empty disables billing entirely
 }
 
 // FromEnv reads variables with sensible Phase 1 defaults.
@@ -44,6 +48,9 @@ func FromEnv() (Config, error) {
 		SessionTTL:   durationEnv("MAIN_API_SESSION_TTL", 7*24*time.Hour),
 		CookieSecure: boolEnv("MAIN_API_COOKIE_SECURE", false),
 		CookieDomain: os.Getenv("MAIN_API_COOKIE_DOMAIN"),
+
+		BillingTick:      durationEnv("MAIN_API_BILLING_TICK", 30*time.Second),
+		BillingRatesPath: os.Getenv("MAIN_API_BILLING_RATES_PATH"),
 	}
 
 	if c.DatabaseURL == "" {

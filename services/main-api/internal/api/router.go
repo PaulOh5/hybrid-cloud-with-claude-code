@@ -6,7 +6,7 @@ import (
 
 // NewAdminRouter wires the admin-scoped handlers behind the bearer-token
 // middleware.
-func NewAdminRouter(nodes *AdminHandlers, instances *InstanceHandlers, adminToken string) http.Handler {
+func NewAdminRouter(nodes *AdminHandlers, instances *InstanceHandlers, credits *AdminCreditHandlers, adminToken string) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /admin/nodes", nodes.ListNodes)
 
@@ -14,6 +14,10 @@ func NewAdminRouter(nodes *AdminHandlers, instances *InstanceHandlers, adminToke
 		mux.HandleFunc("GET /admin/instances", instances.List)
 		mux.HandleFunc("POST /admin/instances", instances.Create)
 		mux.HandleFunc("DELETE /admin/instances/{id}", instances.Delete)
+	}
+	if credits != nil {
+		mux.HandleFunc("POST /admin/users/{id}/credits", credits.Recharge)
+		mux.HandleFunc("GET /admin/users/{id}/credits", credits.Balance)
 	}
 
 	return RequireAdminToken(adminToken)(mux)
@@ -34,6 +38,7 @@ type UserHandlers struct {
 	Instances *UserInstanceHandlers
 	Nodes     *UserNodeHandlers
 	SSHKeys   *UserSSHKeyHandlers
+	Credits   *UserCreditHandlers
 }
 
 // NewUserRouter wires the /api/v1/* user-facing endpoints. The outer mux
@@ -64,6 +69,9 @@ func NewUserRouter(h UserHandlers, resolver SessionResolver) http.Handler {
 		authed.HandleFunc("GET /api/v1/ssh-keys", h.SSHKeys.List)
 		authed.HandleFunc("POST /api/v1/ssh-keys", h.SSHKeys.Add)
 		authed.HandleFunc("DELETE /api/v1/ssh-keys/{id}", h.SSHKeys.Delete)
+	}
+	if h.Credits != nil {
+		authed.HandleFunc("GET /api/v1/credits", h.Credits.Balance)
 	}
 	authedHandler := RequireUser(authed)
 
