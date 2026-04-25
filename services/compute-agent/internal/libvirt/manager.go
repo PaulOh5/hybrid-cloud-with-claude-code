@@ -22,6 +22,7 @@ type Connector interface {
 	DomainLookupByName(name string) (golibvirt.Domain, error)
 	DomainGetState(d golibvirt.Domain, flags uint32) (int32, int32, error)
 	DomainGetXMLDesc(d golibvirt.Domain, flags golibvirt.DomainXMLFlags) (string, error)
+	DomainInterfaceAddresses(d golibvirt.Domain, source uint32, flags uint32) ([]golibvirt.DomainInterface, error)
 	Disconnect() error
 }
 
@@ -138,6 +139,29 @@ func (m *LibvirtManager) DomainPassthroughPCI(_ context.Context, name string) ([
 	return ParsePassthroughPCIFromXML(raw)
 }
 
+// DomainIPv4 reads the dnsmasq-lease IP for the domain's first virtio NIC.
+// Returns "" with nil error when no lease is yet known so the caller can
+// retry; only persistent failures bubble up as errors.
+func (m *LibvirtManager) DomainIPv4(_ context.Context, name string) (string, error) {
+	dom, err := m.conn.DomainLookupByName(name)
+	if err != nil {
+		return "", fmt.Errorf("%w: %s", ErrDomainNotFound, name)
+	}
+	// 0 = VIR_DOMAIN_INTERFACE_ADDRESSES_SRC_LEASE
+	ifaces, err := m.conn.DomainInterfaceAddresses(dom, 0, 0)
+	if err != nil {
+		return "", fmt.Errorf("interface addresses: %w", err)
+	}
+	for _, ifc := range ifaces {
+		for _, a := range ifc.Addrs {
+			if a.Type == 0 && a.Addr != "" {
+				return a.Addr, nil
+			}
+		}
+	}
+	return "", nil
+}
+
 // StreamEvents returns a channel; the lifecycle-event wiring is finished in
 // Task 3.3 once the state machine is merged. For Phase 2 the channel simply
 // closes when ctx is done.
@@ -185,6 +209,10 @@ func (a libvirtConnAdapter) DomainGetState(d golibvirt.Domain, flags uint32) (in
 
 func (a libvirtConnAdapter) DomainGetXMLDesc(d golibvirt.Domain, flags golibvirt.DomainXMLFlags) (string, error) {
 	return a.l.DomainGetXMLDesc(d, flags)
+}
+
+func (a libvirtConnAdapter) DomainInterfaceAddresses(d golibvirt.Domain, source, flags uint32) ([]golibvirt.DomainInterface, error) {
+	return a.l.DomainInterfaceAddresses(d, source, flags)
 }
 
 func (a libvirtConnAdapter) Disconnect() error { return a.l.Disconnect() }

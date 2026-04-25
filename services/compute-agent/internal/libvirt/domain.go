@@ -86,6 +86,10 @@ type Manager interface {
 	// <hostdev> the domain currently has attached. Used post-destroy to
 	// reset the devices before they are handed to the next VM.
 	DomainPassthroughPCI(ctx context.Context, name string) ([]string, error)
+	// DomainIPv4 returns the first IPv4 address libvirt has observed on the
+	// domain (via the dnsmasq lease database). Empty string + nil error
+	// means the lease is not yet known — caller should retry.
+	DomainIPv4(ctx context.Context, name string) (string, error)
 	// StreamEvents returns a channel that closes when ctx is done.
 	StreamEvents(ctx context.Context) (<-chan DomainEvent, error)
 	Close() error

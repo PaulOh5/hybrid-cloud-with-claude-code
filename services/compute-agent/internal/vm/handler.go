@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -145,6 +146,39 @@ func (h *Handler) handleCreate(
 
 	h.log.Info("domain started", "instance_id", id, "display_name", req.Name, "uuid", info.UUID)
 	sendStatus(agentv1.InstanceState_INSTANCE_STATE_RUNNING, statusOpts{})
+
+	// Poll libvirt for the VM's DHCP lease and resend RUNNING with the IP
+	// so main-api can populate instances.vm_internal_ip — the ssh-ticket
+	// endpoint refuses to issue otherwise. Up to ~90s; cloud-init usually
+	// finishes within 30-60s.
+	go h.detectAndPublishIP(ctx, id, sendStatus)
+}
+
+// detectAndPublishIP polls DomainIPv4 every 3s for up to 90s. Once a non-
+// empty IPv4 lease is observed, sends another InstanceStatus(running) with
+// the IP populated. main-api's running→running transition is idempotent and
+// updates only the IP column via coalesce.
+func (h *Handler) detectAndPublishIP(ctx context.Context, id string, sendStatus func(agentv1.InstanceState, statusOpts)) {
+	deadline := time.Now().Add(90 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(3 * time.Second):
+		}
+		ip, err := h.mgr.DomainIPv4(ctx, id)
+		if err != nil {
+			h.log.Warn("vm ip lookup", "instance_id", id, "err", err)
+			return
+		}
+		if ip == "" {
+			continue
+		}
+		h.log.Info("vm ip resolved", "instance_id", id, "ip", ip)
+		sendStatus(agentv1.InstanceState_INSTANCE_STATE_RUNNING, statusOpts{IP: ip})
+		return
+	}
+	h.log.Warn("vm ip not resolved within deadline", "instance_id", id)
 }
 
 func (h *Handler) handleDestroy(

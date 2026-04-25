@@ -101,6 +101,10 @@ func (f *fakeConn) DomainGetState(d golibvirt.Domain, _ uint32) (int32, int32, e
 	return s, 0, nil
 }
 
+func (f *fakeConn) DomainInterfaceAddresses(_ golibvirt.Domain, _ uint32, _ uint32) ([]golibvirt.DomainInterface, error) {
+	return nil, nil
+}
+
 func (f *fakeConn) DomainGetXMLDesc(d golibvirt.Domain, _ golibvirt.DomainXMLFlags) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
