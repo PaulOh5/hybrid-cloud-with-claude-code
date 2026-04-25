@@ -1,0 +1,25 @@
+[Unit]
+Description=Hybrid Cloud — compute-agent (libvirt/VM lifecycle)
+After=network-online.target libvirtd.service hybrid-main-api.service
+Wants=network-online.target
+# libvirtd is a system unit; user instance can still depend on it via
+# After= even though Wants= here would be a no-op for system targets.
+
+[Service]
+Type=simple
+WorkingDirectory=%h/hybrid-cloud
+EnvironmentFile=%h/hybrid-cloud/.env.production
+ExecStart=%h/hybrid-cloud/bin/compute-agent
+Restart=on-failure
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=30
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hybrid-compute-agent
+# Operator must add the running user to the `libvirt` group and ensure
+# /var/lib/hybrid/{images,seeds} are writable. Phase 1 keeps the agent
+# co-located with main-api on h20a.
+
+[Install]
+WantedBy=default.target

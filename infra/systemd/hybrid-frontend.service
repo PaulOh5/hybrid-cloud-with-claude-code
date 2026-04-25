@@ -1,0 +1,21 @@
+[Unit]
+Description=Hybrid Cloud — frontend (Next.js standalone)
+After=network-online.target hybrid-main-api.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/hybrid-cloud/web/current
+EnvironmentFile=%h/hybrid-cloud/.env.production
+# Next.js standalone build emits server.js at the package root.
+ExecStart=/usr/bin/node server.js
+Restart=on-failure
+RestartSec=3
+KillSignal=SIGTERM
+TimeoutStopSec=15
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hybrid-frontend
+
+[Install]
+WantedBy=default.target

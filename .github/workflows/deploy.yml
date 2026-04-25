@@ -1,0 +1,205 @@
+name: Deploy
+
+# Manual deploy to the production host (h20a / qlaud.net). Phase 1 has no
+# staging — operator is the gate. The workflow refuses to deploy a SHA whose
+# CI is not green.
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "Full commit SHA to deploy (defaults to current main HEAD)"
+        required: false
+        default: ""
+      skip_ci_check:
+        description: "Skip the 'CI green for SHA' check (emergency only)"
+        type: boolean
+        required: false
+        default: false
+
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false  # Never interrupt an in-flight deploy
+
+env:
+  GO_VERSION: "1.25"
+  NODE_VERSION: "22"
+  PNPM_VERSION: "10"
+  GO_PATHS: >-
+    ./services/compute-agent/...
+    ./services/main-api/...
+    ./services/ssh-proxy/...
+    ./shared/...
+
+jobs:
+  resolve-sha:
+    name: Resolve target SHA
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: resolve
+        env:
+          INPUT_SHA: ${{ inputs.sha }}
+        run: |
+          if [[ -n "$INPUT_SHA" ]]; then
+            sha="$INPUT_SHA"
+          else
+            sha="$(git rev-parse HEAD)"
+          fi
+          if [[ ! "$sha" =~ ^[0-9a-f]{7,40}$ ]]; then
+            echo "::error::invalid sha: $sha"; exit 1
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "Deploy target SHA: $sha"
+
+  verify-ci:
+    name: Verify CI green for SHA
+    needs: resolve-sha
+    runs-on: ubuntu-latest
+    if: ${{ !inputs.skip_ci_check }}
+    steps:
+      - name: Check CI runs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SHA: ${{ needs.resolve-sha.outputs.sha }}
+        run: |
+          status=$(gh run list --workflow=ci.yml --commit "$SHA" \
+            --json status,conclusion --limit 1 \
+            | jq -r '.[0] | "\(.status):\(.conclusion)"')
+          echo "CI status for $SHA: $status"
+          case "$status" in
+            completed:success) echo "CI green — proceeding" ;;
+            null:*|:* )        echo "::error::no CI run found for $SHA"; exit 1 ;;
+            *)                 echo "::error::CI not green: $status"; exit 1 ;;
+          esac
+
+  build:
+    name: Build artifacts
+    needs: [resolve-sha, verify-ci]
+    # `if: always()` lets the build run when verify-ci was skipped via input,
+    # but only if its predecessors did not actually fail.
+    if: ${{ always() && needs.resolve-sha.result == 'success' && (needs.verify-ci.result == 'success' || needs.verify-ci.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve-sha.outputs.sha }}
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Build Go binaries (linux/amd64)
+        env:
+          CGO_ENABLED: "0"
+          GOOS: linux
+          GOARCH: amd64
+        run: |
+          mkdir -p dist
+          go build -trimpath -ldflags="-s -w -X main.commit=${{ needs.resolve-sha.outputs.sha }}" \
+            -o dist/main-api      ./services/main-api/cmd/main-api
+          go build -trimpath -ldflags="-s -w -X main.commit=${{ needs.resolve-sha.outputs.sha }}" \
+            -o dist/ssh-proxy     ./services/ssh-proxy/cmd/ssh-proxy
+          go build -trimpath -ldflags="-s -w -X main.commit=${{ needs.resolve-sha.outputs.sha }}" \
+            -o dist/compute-agent ./services/compute-agent/cmd/compute-agent
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Build frontend (standalone)
+        env:
+          # Same-origin: the browser hits /api/v1/* on the frontend host and
+          # next.config.ts rewrites to MAIN_API_URL server-side.
+          MAIN_API_URL: http://127.0.0.1:8080
+        run: |
+          pnpm install --frozen-lockfile
+          (cd web/frontend && pnpm build)
+          # Next.js standalone needs static + public copied next to server.js
+          # to render anything beyond the SSR HTML shell.
+          mkdir -p dist/frontend
+          cp -a web/frontend/.next/standalone/. dist/frontend/
+          mkdir -p dist/frontend/.next
+          cp -a web/frontend/.next/static dist/frontend/.next/static
+          if [[ -d web/frontend/public ]]; then
+            cp -a web/frontend/public dist/frontend/public
+          fi
+          tar -czf dist/frontend.tar.gz -C dist/frontend .
+          rm -rf dist/frontend
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deploy-${{ needs.resolve-sha.outputs.sha }}
+          path: dist/
+          retention-days: 14
+
+  deploy:
+    name: Deploy to h20a
+    needs: [resolve-sha, build]
+    runs-on: ubuntu-latest
+    environment: production  # GitHub Environments — required-reviewers can gate
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve-sha.outputs.sha }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: deploy-${{ needs.resolve-sha.outputs.sha }}
+          path: dist/
+
+      - name: Configure SSH
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
+
+      - name: Pin known_hosts
+        env:
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: Rsync artifacts to staging dir
+        env:
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          SHA: ${{ needs.resolve-sha.outputs.sha }}
+        run: |
+          STAGING="\$HOME/hybrid-cloud/staging/${SHA:0:12}"
+          ssh "${DEPLOY_USER}@${DEPLOY_HOST}" "rm -rf $STAGING && mkdir -p $STAGING"
+          rsync -avz --chmod=u+rwx,go-w \
+            dist/main-api dist/ssh-proxy dist/compute-agent dist/frontend.tar.gz \
+            "${DEPLOY_USER}@${DEPLOY_HOST}:$STAGING/"
+
+      - name: Run deploy.sh on h20a
+        env:
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          SHA: ${{ needs.resolve-sha.outputs.sha }}
+        run: |
+          # The script is in the deploy_root checkout on h20a; CI does not
+          # ship deploy.sh itself — operator updates it manually via PR + git
+          # pull on the host, since changing deploy logic mid-flight is a
+          # foot-gun.
+          STAGING="\$HOME/hybrid-cloud/staging/${SHA:0:12}"
+          ssh "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            "bash \$HOME/hybrid-cloud/scripts/deploy.sh $STAGING $SHA"
+
+      - name: External smoke check (qlaud.net)
+        env:
+          PUBLIC_URL: ${{ secrets.DEPLOY_PUBLIC_URL }}
+        run: |
+          # Public-facing checks: dashboard /login renders, API rejects
+          # unauthenticated requests with 401 (proves middleware is active).
+          curl -fsS -o /dev/null "$PUBLIC_URL/login"
+          code=$(curl -s -o /dev/null -w '%{http_code}' "$PUBLIC_URL/api/v1/instances")
+          [[ "$code" == "401" ]] || { echo "::error::expected 401, got $code"; exit 1; }
+          echo "external smoke OK"

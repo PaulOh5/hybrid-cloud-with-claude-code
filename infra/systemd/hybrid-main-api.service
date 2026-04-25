@@ -1,0 +1,23 @@
+[Unit]
+Description=Hybrid Cloud — main-api (HTTP + gRPC control plane)
+After=network-online.target
+Wants=network-online.target
+# Postgres runs in docker; do not hard-Require so a transient docker stop
+# does not nuke the unit. main-api reconnects automatically.
+
+[Service]
+Type=simple
+WorkingDirectory=%h/hybrid-cloud
+EnvironmentFile=%h/hybrid-cloud/.env.production
+ExecStart=%h/hybrid-cloud/bin/main-api
+Restart=on-failure
+RestartSec=3
+# Graceful shutdown: SIGTERM is honored via signal.NotifyContext in main.go.
+KillSignal=SIGTERM
+TimeoutStopSec=20
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hybrid-main-api
+
+[Install]
+WantedBy=default.target

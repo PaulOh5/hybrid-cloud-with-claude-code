@@ -7,6 +7,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"flag"
 	"io/fs"
 	"log/slog"
 	"net"
@@ -43,6 +44,12 @@ import (
 )
 
 func main() {
+	// --migrate-only lets the deploy pipeline apply schema changes from the
+	// new binary BEFORE swapping the running service. Exits 0 on success,
+	// non-zero on migration failure so CD can abort cleanly.
+	migrateOnly := flag.Bool("migrate-only", false, "run goose migrations and exit")
+	flag.Parse()
+
 	log := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(log)
 
@@ -55,9 +62,8 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	if err := migrate(ctx, cfg.DatabaseURL); err != nil {
-		log.Error("migrate", "err", err)
-		os.Exit(1)
+	if runMigrations(ctx, log, cfg.DatabaseURL, *migrateOnly) {
+		return
 	}
 
 	pool, err := pgxpool.New(ctx, cfg.DatabaseURL)
@@ -222,6 +228,21 @@ func main() {
 	grpcServer.GracefulStop()
 	wg.Wait()
 	log.Info("exit")
+}
+
+// runMigrations applies schema changes and returns true when the caller
+// should exit before starting the service (i.e. --migrate-only mode).
+// On migration failure it terminates the process with exit code 1.
+func runMigrations(ctx context.Context, log *slog.Logger, dbURL string, migrateOnly bool) bool {
+	if err := migrate(ctx, dbURL); err != nil {
+		log.Error("migrate", "err", err)
+		os.Exit(1)
+	}
+	if migrateOnly {
+		log.Info("migrate-only complete")
+		return true
+	}
+	return false
 }
 
 func migrate(ctx context.Context, url string) error {

@@ -16,6 +16,7 @@ Each runbook is structured the same way:
 | [ssh-proxy-crash.md](./ssh-proxy-crash.md) | Users can't open `ssh -J proxy.qlaud.net …`. |
 | [db-failure.md](./db-failure.md) | Postgres is down, slow, or returning errors. |
 | [full-rollback.md](./full-rollback.md) | Latest deploy is broken; revert services + DB to last known good. |
+| [deploy.md](./deploy.md) | Trigger / debug a production deploy via GitHub Actions. |
 | [loki-setup.md](./loki-setup.md) | Wiring Loki + Promtail behind the existing JSON logs. |
 
 Backup & restore scripts live at [`scripts/backup.sh`](../../scripts/backup.sh)
