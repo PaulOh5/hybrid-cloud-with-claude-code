@@ -62,7 +62,7 @@
 - [x] **8.1** Next.js 쉘 + 인증 플로우 UI — App Router·shadcn/ui·login·register (M)
 - [x] **8.2** 인스턴스 리스트 + 생성 UI — GPU 크기 선택 1/2/4 (M)
 - [x] **8.3** 인스턴스 상세 — SSH 접속 정보·사용자 SSH 키 관리 (M)
-- [ ] **✔ Checkpoint 8:** Playwright E2E — 가입 → 로그인 → SSH 키 → 인스턴스 → SSH 접속 → 파괴
+- [x] **✔ Checkpoint 8:** Playwright E2E — 가입 → 로그인 → SSH 키 → 인스턴스 → SSH 접속 → 파괴
 - [ ] **📋 Open Q P5 결정 필요 (8.3 전):** SSH 키 관리 UX 모델
 
 ## Phase 9 · Credits & Billing

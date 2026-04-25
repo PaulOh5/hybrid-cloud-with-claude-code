@@ -15,16 +15,20 @@ const POLL_INTERVAL_MS = 5_000;
 
 type Props = {
   instanceID: string;
-  // sshHost is the public hostname users connect through (proxy.qlaud.net or
-  // similar). The subdomain prefix is derived from instanceID at render
-  // time.
+  // sshHost is the wildcard hostname users connect through; the prefix is
+  // derived from instanceID at render time, e.g. <prefix>.qlaud.net.
   sshHost: string;
+  // sshProxyHost is the ssh-proxy entry point, used as a ProxyJump host.
+  // ssh-proxy accepts only direct-tcpip channels, so the displayed command
+  // must use `-J` (or equivalent ProxyCommand) — a plain `ssh user@target`
+  // would be rejected with "channel type session not supported".
+  sshProxyHost: string;
   // sshUsername is the default cloud-init user — Phase 1 hard-codes this so
-  // users see a copy-pasteable command. Phase 8.3 may make it configurable.
+  // users see a copy-pasteable command.
   sshUsername: string;
 };
 
-export function InstanceDetail({ instanceID, sshHost, sshUsername }: Props) {
+export function InstanceDetail({ instanceID, sshHost, sshProxyHost, sshUsername }: Props) {
   const router = useRouter();
   const [instance, setInstance] = useState<Instance | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -73,7 +77,7 @@ export function InstanceDetail({ instanceID, sshHost, sshUsername }: Props) {
 
   const subdomain = instance.id.slice(0, 8);
   const sshHostname = `${subdomain}.${sshHost}`;
-  const sshCommand = `ssh ${sshUsername}@${sshHostname}`;
+  const sshCommand = `ssh -J ${sshProxyHost} ${sshUsername}@${sshHostname}`;
 
   async function handleDelete() {
     if (!confirm(`인스턴스 "${instance!.name}"을(를) 삭제하시겠습니까?`)) return;
