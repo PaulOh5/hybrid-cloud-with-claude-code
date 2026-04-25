@@ -1,0 +1,48 @@
+name: E2E
+
+# Phase 8 Playwright suite drives a fully wired stack (postgres + main-api +
+# ssh-proxy + compute-agent) and provisions real VMs, so it cannot run on
+# every PR. Trigger manually against a deployed environment.
+on:
+  workflow_dispatch:
+    inputs:
+      base_url:
+        description: "Target base URL (e.g. https://qlaud.net)"
+        required: true
+        default: "http://qlaud.net"
+
+env:
+  NODE_VERSION: "22"
+  PNPM_VERSION: "10"
+
+jobs:
+  playwright:
+    name: Playwright full-journey
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - name: Install (workspace)
+        run: pnpm install --frozen-lockfile
+      - name: Install Playwright browsers
+        working-directory: web/frontend
+        run: pnpm exec playwright install --with-deps chromium
+      - name: Run Playwright
+        working-directory: web/frontend
+        run: pnpm test:e2e
+        env:
+          BASE_URL: ${{ inputs.base_url }}
+          CI: "1"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: playwright-report
+          path: web/frontend/playwright-report/
+          retention-days: 14

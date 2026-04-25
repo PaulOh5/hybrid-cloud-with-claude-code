@@ -37,6 +37,7 @@ type recordingHandler struct {
 	mu       sync.Mutex
 	calls    []string
 	closeErr error
+	called   chan struct{} // optional: signals once per Connect for sync
 }
 
 func (h *recordingHandler) Connect(_ context.Context, prefix string, ch ssh.Channel) error {
@@ -46,6 +47,9 @@ func (h *recordingHandler) Connect(_ context.Context, prefix string, ch ssh.Chan
 	// Immediately close the channel — Task 6.1 proves the routing signal is
 	// correct; the actual byte relay lands in 6.3.
 	_ = ch.Close()
+	if h.called != nil {
+		h.called <- struct{}{}
+	}
 	return h.closeErr
 }
 
@@ -105,19 +109,26 @@ func dialProxy(t *testing.T, addr string) *ssh.Client {
 func TestDirectTCPIP_Accepted_InZone(t *testing.T) {
 	t.Parallel()
 
-	handler := &recordingHandler{}
+	handler := &recordingHandler{called: make(chan struct{}, 1)}
 	addr, rec := startServer(t, handler)
 
 	client := dialProxy(t, addr)
 	defer func() { _ = client.Close() }()
 
-	// Dial a "forwarded" target. The server handler records the prefix and
-	// closes the channel; Dial returns once the TCP-style channel closes.
+	// Dial a "forwarded" target. client.Dial returns as soon as the server
+	// accepts the channel — the server-side handler runs concurrently, so
+	// without the `called` signal `prefixes()` can race the append.
 	conn, err := client.Dial("tcp", "abc12345.hybrid-cloud.com:22")
 	if err != nil {
 		t.Fatalf("client.Dial: %v", err)
 	}
 	_ = conn.Close()
+
+	select {
+	case <-handler.called:
+	case <-time.After(2 * time.Second):
+		t.Fatal("server handler did not run")
+	}
 
 	if got := rec.prefixes(); len(got) != 1 || got[0] != "abc12345" {
 		t.Fatalf("prefixes: got %v, want [abc12345]", got)

@@ -3,6 +3,7 @@ package vm
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -12,6 +13,25 @@ import (
 	"hybridcloud/services/compute-agent/internal/libvirt"
 	agentv1 "hybridcloud/shared/proto/agent/v1"
 )
+
+// duplicateDropSink signals on each "duplicate create dropped" warning so
+// tests can synchronize on the rejected goroutine without racy sleeps.
+type duplicateDropSink struct {
+	fired chan struct{}
+}
+
+func (s *duplicateDropSink) Enabled(context.Context, slog.Level) bool { return true }
+func (s *duplicateDropSink) Handle(_ context.Context, r slog.Record) error {
+	if r.Level == slog.LevelWarn && r.Message == "duplicate create dropped" {
+		select {
+		case s.fired <- struct{}{}:
+		default:
+		}
+	}
+	return nil
+}
+func (s *duplicateDropSink) WithAttrs([]slog.Attr) slog.Handler { return s }
+func (s *duplicateDropSink) WithGroup(string) slog.Handler      { return s }
 
 // --- fake libvirt manager --------------------------------------------------
 
@@ -198,11 +218,19 @@ func TestHandler_DuplicateCreateIgnored(t *testing.T) {
 	mgr := &fakeMgr{}
 	cfg := Config{ImageDir: t.TempDir(), SeedDir: t.TempDir(), BaseImage: "/x"}
 
+	// Custom slog handler signals when the rejected goroutine logs the drop —
+	// the test relies on this to know G2 has run acquire and failed before
+	// releasing G1.
+	sink := &duplicateDropSink{fired: make(chan struct{}, 2)}
+
 	// Block the image creator so the first create is still in flight when the
-	// second arrives.
+	// second arrives. `entered` confirms G1 has acquired the in-flight slot
+	// before G2 fires.
 	release := make(chan struct{})
-	h := New(mgr, cfg, nil)
+	entered := make(chan struct{}, 1)
+	h := New(mgr, cfg, slog.New(sink))
 	h.WithImageCreator(func(ctx context.Context, _, dst string) error {
+		entered <- struct{}{}
 		<-release
 		return os.WriteFile(dst, []byte{}, 0o600)
 	})
@@ -213,18 +241,32 @@ func TestHandler_DuplicateCreateIgnored(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	for i := 0; i < 2; i++ {
-		h.OnControl(ctx, &agentv1.ControlMessage{
-			Payload: &agentv1.ControlMessage_CreateInstance{
-				CreateInstance: &agentv1.CreateInstance{InstanceId: "dup", Name: "dup", MemoryMb: 512, Vcpus: 1},
-			},
-		}, send)
+	create := &agentv1.ControlMessage{
+		Payload: &agentv1.ControlMessage_CreateInstance{
+			CreateInstance: &agentv1.CreateInstance{InstanceId: "dup", Name: "dup", MemoryMb: 512, Vcpus: 1},
+		},
 	}
 
-	// Let the first create complete.
+	// First create — wait until G1 is blocked in imgFn (past acquire).
+	h.OnControl(ctx, create, send)
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first create did not enter imgFn")
+	}
+
+	// Duplicate — must hit acquire and be rejected because G1 still holds
+	// the in-flight slot. Wait for the drop log to confirm.
+	h.OnControl(ctx, create, send)
+	select {
+	case <-sink.fired:
+	case <-time.After(2 * time.Second):
+		t.Fatal("duplicate goroutine did not log drop")
+	}
+
 	close(release)
 	got := collectStatuses(t, statuses, 4, 2*time.Second)
-	// 2 statuses expected (one provisioning + one running). Anything > 2
+	// 2 statuses expected (provisioning + running from G1). Anything > 2
 	// means the duplicate leaked through.
 	if len(got) != 2 {
 		t.Fatalf("expected exactly 2 statuses, got %d", len(got))
