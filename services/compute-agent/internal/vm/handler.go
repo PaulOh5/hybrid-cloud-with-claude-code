@@ -438,7 +438,7 @@ func (h *Handler) networkName() string {
 type opKind int
 
 const (
-	opCreate  opKind = iota + 1
+	opCreate opKind = iota + 1
 	opDestroy
 )
 
@@ -475,7 +475,10 @@ func (h *Handler) acquireOp(parent context.Context, id string, kind opKind) (con
 			h.mu.Unlock()
 			return ctx, slot, true
 		}
-		if existing.kind == kind || !(kind == opDestroy && existing.kind == opCreate) {
+		// Drop the request unless this is the one allowed preemption:
+		// a fresh destroy taking over an in-flight create. Same-op
+		// duplicates and any other combo are silently dropped.
+		if existing.kind == kind || kind != opDestroy || existing.kind != opCreate {
 			h.mu.Unlock()
 			return nil, nil, false
 		}
