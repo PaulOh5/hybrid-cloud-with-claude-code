@@ -192,13 +192,11 @@ func TestSSHTicket_UnknownFingerprintReturns404(t *testing.T) {
 func TestSSHTicket_OwnershipIsolation(t *testing.T) {
 	t.Parallel()
 
-	router, _, instanceID, _ := seedRunningInstance(t)
+	_, _, instanceID, _ := seedRunningInstance(t)
 
 	// Map the *other* fingerprint to a different user. They should not be
 	// able to reach the seed user's instance even with the right prefix.
 	otherUser := uuid.New()
-	authRouterReplacement := router.(http.Handler) // sanity: not nil
-	_ = authRouterReplacement
 	// We have to rebuild the router for the other-user scenario because
 	// fakeSSHKeyAuth is configured at construction time. Reuse the helper
 	// to keep the seeding consistent.

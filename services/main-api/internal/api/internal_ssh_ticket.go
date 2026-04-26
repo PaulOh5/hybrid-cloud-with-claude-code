@@ -66,35 +66,40 @@ func isHexLower(s string) bool {
 	return true
 }
 
+// parseSSHTicketRequest reads and validates the request body. Returns a
+// non-zero (status, code, msg) on validation failure so the caller writes
+// the error and returns.
+func parseSSHTicketRequest(r *http.Request) (req sshTicketRequest, status int, code, msg string) {
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<10))
+	if err != nil {
+		return req, http.StatusBadRequest, "read_body", err.Error()
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		return req, http.StatusBadRequest, "bad_json", err.Error()
+	}
+	req.SubdomainPrefix = strings.ToLower(strings.TrimSpace(req.SubdomainPrefix))
+	if req.SubdomainPrefix == "" {
+		return req, http.StatusBadRequest, "missing_prefix", "subdomain_prefix required"
+	}
+	if n := len(req.SubdomainPrefix); n < minSubdomainPrefixLen || n > maxSubdomainPrefixLen || !isHexLower(req.SubdomainPrefix) {
+		return req, http.StatusBadRequest, "bad_prefix",
+			"subdomain_prefix must be 8-32 lowercase hex chars"
+	}
+	req.SSHKeyFingerprint = strings.TrimSpace(req.SSHKeyFingerprint)
+	if req.SSHKeyFingerprint == "" {
+		return req, http.StatusBadRequest, "missing_fingerprint", "ssh_key_fingerprint required"
+	}
+	return req, 0, "", ""
+}
+
 // SSHTicketHandler builds the http.HandlerFunc. Wrapped separately so the
 // router only needs the internal token middleware + this func.
 func SSHTicketHandler(deps SSHTicketDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		defer func() { _ = r.Body.Close() }()
-		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<10))
-		if err != nil {
-			writeError(w, http.StatusBadRequest, "read_body", err.Error())
-			return
-		}
-		var req sshTicketRequest
-		if err := json.Unmarshal(body, &req); err != nil {
-			writeError(w, http.StatusBadRequest, "bad_json", err.Error())
-			return
-		}
-		req.SubdomainPrefix = strings.ToLower(strings.TrimSpace(req.SubdomainPrefix))
-		if req.SubdomainPrefix == "" {
-			writeError(w, http.StatusBadRequest, "missing_prefix", "subdomain_prefix required")
-			return
-		}
-		if n := len(req.SubdomainPrefix); n < minSubdomainPrefixLen || n > maxSubdomainPrefixLen || !isHexLower(req.SubdomainPrefix) {
-			writeError(w, http.StatusBadRequest, "bad_prefix",
-				"subdomain_prefix must be 8-32 lowercase hex chars")
-			return
-		}
-		req.SSHKeyFingerprint = strings.TrimSpace(req.SSHKeyFingerprint)
-		if req.SSHKeyFingerprint == "" {
-			writeError(w, http.StatusBadRequest, "missing_fingerprint",
-				"ssh_key_fingerprint required")
+		req, status, code, msg := parseSSHTicketRequest(r)
+		if status != 0 {
+			writeError(w, status, code, msg)
 			return
 		}
 		if deps.SSHKeys == nil {

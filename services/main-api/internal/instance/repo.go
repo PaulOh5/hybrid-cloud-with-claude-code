@@ -12,7 +12,6 @@ import (
 	"hybridcloud/services/main-api/internal/db/dbstore"
 )
 
-
 // TxBeginner is the narrow subset of pgxpool.Pool / pgx.Conn we need to open
 // transactions. pgxpool.Pool implements this interface.
 type TxBeginner interface {
