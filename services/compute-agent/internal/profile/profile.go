@@ -50,6 +50,17 @@ var ErrUnknownGPU = errors.New("profile: slot references unknown GPU index")
 // ErrDuplicateGPU means two slots in the active layout share a GPU.
 var ErrDuplicateGPU = errors.New("profile: gpu claimed by two slots")
 
+// ErrEmptyGpuIndices means a slot's gpu_indices list is empty when the
+// slot's size is positive — caught explicitly because the generic size-
+// mismatch message ("size=N, lists 0") loses the "missing entirely" signal.
+var ErrEmptyGpuIndices = errors.New("profile: slot.gpu_indices is empty")
+
+// ErrSharedNvlinkDomain means two slots claim GPUs that sit in the same
+// NVLink domain. Sharing a domain across multi-GPU VMs splits the NVLink
+// pairing between tenants and silently drops bandwidth — Phase 1 F4
+// requires NVLink groups stay intact within a slot.
+var ErrSharedNvlinkDomain = errors.New("profile: nvlink_domain claimed by two slots")
+
 // Load reads a YAML file and decodes it. It does NOT validate against
 // topology — call Resolve for that.
 func Load(path string) (File, []byte, error) {
@@ -93,9 +104,13 @@ func Resolve(f File, rawYAML []byte, hostGPUIndices []int32) (Resolved, error) {
 	}
 
 	claimed := make(map[int32]bool)
+	claimedDomain := make(map[string]int) // domain → slot index that claimed it
 	for i, s := range active.Slots {
 		if s.Size <= 0 {
 			return Resolved{}, fmt.Errorf("%w: slot %d size=%d", ErrSlotSizeMismatch, i, s.Size)
+		}
+		if len(s.GpuIndices) == 0 {
+			return Resolved{}, fmt.Errorf("%w: slot %d declares size=%d", ErrEmptyGpuIndices, i, s.Size)
 		}
 		if int(s.Size) != len(s.GpuIndices) {
 			return Resolved{}, fmt.Errorf("%w: slot %d declares size=%d but lists %d gpus",
@@ -109,6 +124,13 @@ func Resolve(f File, rawYAML []byte, hostGPUIndices []int32) (Resolved, error) {
 				return Resolved{}, fmt.Errorf("%w: gpu %d", ErrDuplicateGPU, g)
 			}
 			claimed[g] = true
+		}
+		if s.NvlinkDomain != "" {
+			if other, ok := claimedDomain[s.NvlinkDomain]; ok {
+				return Resolved{}, fmt.Errorf("%w: %q in slots %d and %d",
+					ErrSharedNvlinkDomain, s.NvlinkDomain, other, i)
+			}
+			claimedDomain[s.NvlinkDomain] = i
 		}
 	}
 

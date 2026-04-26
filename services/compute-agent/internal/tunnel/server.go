@@ -59,7 +59,12 @@ type Config struct {
 	// HeaderTimeout bounds how long we wait for the JSON header line.
 	// Default 5s.
 	HeaderTimeout time.Duration
-	Log           *slog.Logger
+	// IdleTimeout drops a relay that exchanges no bytes for this long.
+	// Without it, an SSH session left open by a forgotten terminal
+	// outlives the user's intent and pins agent / proxy goroutines
+	// indefinitely. Default 30 minutes; zero disables.
+	IdleTimeout time.Duration
+	Log         *slog.Logger
 }
 
 // Server is the agent's TCP tunnel listener. Bind via net.Listen and feed
@@ -79,6 +84,9 @@ func New(cfg Config) (*Server, error) {
 	}
 	if cfg.HeaderTimeout <= 0 {
 		cfg.HeaderTimeout = 5 * time.Second
+	}
+	if cfg.IdleTimeout <= 0 {
+		cfg.IdleTimeout = 30 * time.Minute
 	}
 	if cfg.Log == nil {
 		cfg.Log = slog.Default()
@@ -146,16 +154,18 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 		"instance", ticket.InstanceID,
 		"target", target,
 	)
-	relay(ctx, conn, upstream)
+	relay(ctx, conn, upstream, s.cfg.IdleTimeout)
 	s.cfg.Log.Debug("tunnel closed", "session", ticket.SessionID)
 }
 
 // relay shuttles bytes in both directions and returns when either side
-// closes. Context cancellation breaks the copy loop on both halves.
-func relay(ctx context.Context, a, b net.Conn) {
+// closes. Context cancellation breaks the copy loop on both halves. When
+// idleTimeout > 0, both sides' read deadline is bumped on every successful
+// read; an idle session is force-closed after the timeout elapses.
+func relay(ctx context.Context, a, b net.Conn, idleTimeout time.Duration) {
 	done := make(chan struct{}, 2)
-	go copyHalf(a, b, done)
-	go copyHalf(b, a, done)
+	go copyHalfIdle(a, b, idleTimeout, done)
+	go copyHalfIdle(b, a, idleTimeout, done)
 	select {
 	case <-done:
 	case <-ctx.Done():
@@ -165,7 +175,26 @@ func relay(ctx context.Context, a, b net.Conn) {
 	<-done
 }
 
-func copyHalf(dst, src net.Conn, done chan<- struct{}) {
-	_, _ = io.Copy(dst, src)
-	done <- struct{}{}
+// copyHalfIdle copies src→dst, refreshing src's read deadline after every
+// non-empty read so an idle stream times out instead of pinning the
+// goroutine. idleTimeout==0 disables the deadline (legacy behaviour).
+func copyHalfIdle(dst, src net.Conn, idleTimeout time.Duration, done chan<- struct{}) {
+	defer func() { done <- struct{}{} }()
+	if idleTimeout <= 0 {
+		_, _ = io.Copy(dst, src)
+		return
+	}
+	buf := make([]byte, 32*1024)
+	for {
+		_ = src.SetReadDeadline(time.Now().Add(idleTimeout))
+		n, err := src.Read(buf)
+		if n > 0 {
+			if _, werr := dst.Write(buf[:n]); werr != nil {
+				return
+			}
+		}
+		if err != nil {
+			return
+		}
+	}
 }

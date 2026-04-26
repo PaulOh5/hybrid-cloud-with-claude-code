@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"hybridcloud/services/compute-agent/internal/libvirt"
 	"hybridcloud/services/compute-agent/internal/profile"
@@ -20,6 +21,10 @@ import (
 	"hybridcloud/services/compute-agent/internal/vm"
 	agentv1 "hybridcloud/shared/proto/agent/v1"
 )
+
+// shutdownGrace is how long we wait for in-flight VM ops (qemu-img,
+// libvirt destroy, GPU reset) to finish after SIGTERM before forcing exit.
+const shutdownGrace = 30 * time.Second
 
 func main() {
 	var (
@@ -84,6 +89,7 @@ func main() {
 	}
 
 	var onControl func(ctx context.Context, m *agentv1.ControlMessage, send func(*agentv1.AgentMessage))
+	var vmHandler *vm.Handler
 	if *disableVMs {
 		log.Warn("VM handling disabled — control messages will be ignored")
 	} else {
@@ -94,14 +100,14 @@ func main() {
 		}
 		defer func() { _ = mgr.Close() }()
 
-		h := vm.New(mgr, vm.Config{
+		vmHandler = vm.New(mgr, vm.Config{
 			ImageDir:    *imageDir,
 			SeedDir:     *seedDir,
 			BaseImage:   *baseImage,
 			NetworkName: *netName,
 			DiskSizeGB:  *diskGB,
 		}, log)
-		onControl = h.OnControl
+		onControl = vmHandler.OnControl
 	}
 
 	client, err := stream.New(stream.Config{
@@ -129,8 +135,21 @@ func main() {
 
 	log.Info("compute-agent starting", "endpoint", *endpoint, "node_name", *nodeName, "vms_disabled", *disableVMs)
 
-	if err := client.Run(ctx); err != nil && err != context.Canceled {
-		log.Error("agent exited", "err", err)
+	runErr := client.Run(ctx)
+
+	// SIGTERM grace: the stream is gone but the VM handler may still be
+	// running qemu-img / libvirt destroy / GPU reset for an in-flight
+	// CreateInstance or DestroyInstance. Wait so we don't half-create a
+	// VM or leave a slot's GPU un-reset (Phase 1 A6 gate).
+	if vmHandler != nil {
+		if drained := vmHandler.Wait(shutdownGrace); !drained {
+			log.Warn("vm handler did not drain within grace; forcing shutdown",
+				"grace", shutdownGrace)
+		}
+	}
+
+	if runErr != nil && runErr != context.Canceled {
+		log.Error("agent exited", "err", runErr)
 		os.Exit(1)
 	}
 	log.Info("compute-agent shut down")

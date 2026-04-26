@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
 
 	"hybridcloud/services/compute-agent/internal/gpu"
 	agentv1 "hybridcloud/shared/proto/agent/v1"
@@ -81,7 +82,13 @@ func (c LinuxCollector) collectViaNvidiaSmi(ctx context.Context) []*agentv1.Gpu 
 	if _, err := exec.LookPath(smi); err != nil {
 		return nil
 	}
-	cmd := exec.CommandContext(ctx, smi, "-q", "-x")
+	// nvidia-smi has been observed to hang for tens of seconds in edge
+	// cases (driver in bad state, GPU pinned by another process). Bound
+	// it independently of the caller ctx so a degraded GPU doesn't park
+	// the entire topology collector at startup.
+	cmdCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(cmdCtx, smi, "-q", "-x")
 	out, err := cmd.Output()
 	if err != nil {
 		return nil
