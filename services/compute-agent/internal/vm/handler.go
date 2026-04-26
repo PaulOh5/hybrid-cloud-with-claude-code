@@ -100,7 +100,18 @@ func (h *Handler) handleCreate(
 		h.log.Warn("duplicate create dropped", "instance_id", id)
 		return
 	}
-	defer h.release(id)
+	// Track whether we've released yet so error paths still cover the slot.
+	// On the success path we release explicitly *before* sending RUNNING so
+	// a destroy that arrives the moment a caller observes RUNNING can take
+	// the slot without racing the implicit defer.
+	released := false
+	releaseOnce := func() {
+		if !released {
+			released = true
+			h.release(id)
+		}
+	}
+	defer releaseOnce()
 
 	sendStatus := func(state agentv1.InstanceState, opts statusOpts) {
 		send(&agentv1.AgentMessage{
@@ -145,6 +156,14 @@ func (h *Handler) handleCreate(
 	}
 
 	h.log.Info("domain started", "instance_id", id, "display_name", req.Name, "uuid", info.UUID)
+
+	// Release the in-flight slot *before* publishing RUNNING. detectAndPublishIP
+	// is a fire-and-forget side-task that does not need to keep the slot
+	// reserved, and a destroy arriving immediately after the caller observes
+	// RUNNING must be able to acquire without racing this goroutine's
+	// implicit defer. This also makes the test
+	// TestHandler_CreateThenDestroy deterministic.
+	releaseOnce()
 	sendStatus(agentv1.InstanceState_INSTANCE_STATE_RUNNING, statusOpts{})
 
 	// Poll libvirt for the VM's DHCP lease and resend RUNNING with the IP
