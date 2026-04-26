@@ -136,14 +136,15 @@ jobs:
         run: |
           pnpm install --frozen-lockfile
           (cd web/frontend && pnpm build)
-          # Next.js standalone needs static + public copied next to server.js
-          # to render anything beyond the SSR HTML shell.
+          # Next.js 16 standalone in a pnpm workspace keeps the monorepo
+          # layout, so server.js lands at .next/standalone/web/frontend/.
+          # static + public must sit next to that server.js — not at the
+          # standalone root, or Next can't find the chunks at runtime.
           mkdir -p dist/frontend
           cp -a web/frontend/.next/standalone/. dist/frontend/
-          mkdir -p dist/frontend/.next
-          cp -a web/frontend/.next/static dist/frontend/.next/static
+          cp -a web/frontend/.next/static dist/frontend/web/frontend/.next/static
           if [[ -d web/frontend/public ]]; then
-            cp -a web/frontend/public dist/frontend/public
+            cp -a web/frontend/public dist/frontend/web/frontend/public
           fi
           tar -czf dist/frontend.tar.gz -C dist/frontend .
           rm -rf dist/frontend

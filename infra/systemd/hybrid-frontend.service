@@ -5,9 +5,11 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=%h/hybrid-cloud/web/current
+# Next.js 16 standalone in a pnpm workspace preserves the monorepo
+# layout under .next/standalone/, so the real server.js lives at
+# web/current/web/frontend/server.js — not at web/current/server.js.
+WorkingDirectory=%h/hybrid-cloud/web/current/web/frontend
 EnvironmentFile=%h/hybrid-cloud/.env.production
-# Next.js standalone build emits server.js at the package root.
 ExecStart=/usr/bin/node server.js
 Restart=on-failure
 RestartSec=3
