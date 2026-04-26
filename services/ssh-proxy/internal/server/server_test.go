@@ -32,17 +32,19 @@ func newTestHostKey(t *testing.T) ssh.Signer {
 }
 
 // recordingHandler stores every Connect invocation so tests can assert on
-// the received prefix.
+// the received prefix and fingerprint.
 type recordingHandler struct {
-	mu       sync.Mutex
-	calls    []string
-	closeErr error
-	called   chan struct{} // optional: signals once per Connect for sync
+	mu           sync.Mutex
+	calls        []string
+	fingerprints []string
+	closeErr     error
+	called       chan struct{} // optional: signals once per Connect for sync
 }
 
-func (h *recordingHandler) Connect(_ context.Context, prefix string, ch ssh.Channel) error {
+func (h *recordingHandler) Connect(_ context.Context, info server.ConnInfo, prefix string, ch ssh.Channel) error {
 	h.mu.Lock()
 	h.calls = append(h.calls, prefix)
+	h.fingerprints = append(h.fingerprints, info.Fingerprint)
 	h.mu.Unlock()
 	// Immediately close the channel — Task 6.1 proves the routing signal is
 	// correct; the actual byte relay lands in 6.3.
@@ -51,6 +53,15 @@ func (h *recordingHandler) Connect(_ context.Context, prefix string, ch ssh.Chan
 		h.called <- struct{}{}
 	}
 	return h.closeErr
+}
+
+func (h *recordingHandler) lastFingerprint() string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.fingerprints) == 0 {
+		return ""
+	}
+	return h.fingerprints[len(h.fingerprints)-1]
 }
 
 func (h *recordingHandler) prefixes() []string {
@@ -92,9 +103,20 @@ func startServer(t *testing.T, handler server.Handler) (string, *recordingHandle
 
 func dialProxy(t *testing.T, addr string) *ssh.Client {
 	t.Helper()
+	// The proxy now requires a publickey at handshake (it captures the
+	// fingerprint and forwards it to main-api for owner scoping), so we
+	// generate a throwaway key for the client.
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer, err := ssh.NewSignerFromKey(priv)
+	if err != nil {
+		t.Fatal(err)
+	}
 	client, err := ssh.Dial("tcp", addr, &ssh.ClientConfig{
 		User:            "anyone",
-		Auth:            nil, // NoClientAuth on server
+		Auth:            []ssh.AuthMethod{ssh.PublicKeys(signer)},
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
 		Timeout:         3 * time.Second,
 	})
@@ -132,6 +154,9 @@ func TestDirectTCPIP_Accepted_InZone(t *testing.T) {
 
 	if got := rec.prefixes(); len(got) != 1 || got[0] != "abc12345" {
 		t.Fatalf("prefixes: got %v, want [abc12345]", got)
+	}
+	if fp := rec.lastFingerprint(); !strings.HasPrefix(fp, "SHA256:") {
+		t.Fatalf("expected SHA256 fingerprint forwarded to handler, got %q", fp)
 	}
 }
 

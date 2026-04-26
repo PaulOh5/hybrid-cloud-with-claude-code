@@ -11,20 +11,25 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
+	"hybridcloud/services/ssh-proxy/internal/server"
 	"hybridcloud/services/ssh-proxy/internal/ticketclient"
 	"hybridcloud/services/ssh-proxy/internal/tunnelhandler"
 )
 
 type fakeIssuer struct {
 	lastPrefix string
+	lastFP     string
 	signed     ticketclient.Signed
 	err        error
 }
 
-func (f *fakeIssuer) Issue(_ context.Context, prefix string) (ticketclient.Signed, error) {
+func (f *fakeIssuer) Issue(_ context.Context, prefix, fingerprint string) (ticketclient.Signed, error) {
 	f.lastPrefix = prefix
+	f.lastFP = fingerprint
 	return f.signed, f.err
 }
+
+var testInfo = server.ConnInfo{Fingerprint: "SHA256:test-fp", RemoteAddr: "127.0.0.1:1"}
 
 // nopChannel satisfies ssh.Channel for Connect's Close() call without
 // requiring a real SSH session.
@@ -63,11 +68,14 @@ func TestConnect_IssuesTicketAndCloses(t *testing.T) {
 	h := &tunnelhandler.Handler{Tickets: issuer}
 	ch := newNopChannel()
 
-	if err := h.Connect(context.Background(), "abc12345", ch); err != nil {
+	if err := h.Connect(context.Background(), testInfo, "abc12345", ch); err != nil {
 		t.Fatalf("connect: %v", err)
 	}
 	if issuer.lastPrefix != "abc12345" {
 		t.Fatalf("prefix forwarded: %q", issuer.lastPrefix)
+	}
+	if issuer.lastFP != testInfo.Fingerprint {
+		t.Fatalf("fingerprint forwarded: %q", issuer.lastFP)
 	}
 	if !ch.isClosed() {
 		t.Fatal("channel must be closed after ticket (Task 6.2 behavior)")
@@ -81,7 +89,7 @@ func TestConnect_PropagatesIssuerError(t *testing.T) {
 	h := &tunnelhandler.Handler{Tickets: &fakeIssuer{err: wantErr}}
 	ch := newNopChannel()
 
-	err := h.Connect(context.Background(), "abc12345", ch)
+	err := h.Connect(context.Background(), testInfo, "abc12345", ch)
 	if err == nil || !strings.Contains(err.Error(), "ticket") {
 		t.Fatalf("expected ticket error, got %v", err)
 	}
@@ -104,7 +112,7 @@ func TestConnect_RunsAfterTicketHook(t *testing.T) {
 			return nil
 		},
 	}
-	if err := h.Connect(context.Background(), "abc12345", newNopChannel()); err != nil {
+	if err := h.Connect(context.Background(), testInfo, "abc12345", newNopChannel()); err != nil {
 		t.Fatal(err)
 	}
 	if !called {
