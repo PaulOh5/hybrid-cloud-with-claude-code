@@ -1,56 +1,56 @@
 # Phase 1 MVP — Task Checklist
 
-> Detailed plan: [tasks/plan.md](./plan.md) · Spec: [docs/specs/phase-1-mvp.md](../docs/specs/phase-1-mvp.md)
+> Detailed plan: [tasks/phase1/plan.md](./plan.md) · Spec: [docs/specs/phase-1-mvp.md](../docs/specs/phase-1-mvp.md)
 > Gate markers: ✱ = 기술 가정 검증 필수. 실패 시 후속 Phase 진입 금지.
 
 ---
 
 ## Phase 1 · Foundation
-- [ ] **1.1** Monorepo 골격 + CI 파이프라인 — `go.work` · pnpm workspaces · Makefile · golangci-lint · GH Actions (M)
-- [ ] **1.2** Proto 계약 v1 + 코드 생성 — `proto/agent.proto` · buf · Go+TS 스텁 (S)
-- [ ] **1.3** Postgres 스키마 v1 + sqlc 파이프라인 — goose 마이그·sqlc·9 테이블 (M)
-- [ ] **✔ Checkpoint 1:** lint·test·build 녹색, DB 연결 확인, 인간 리뷰
+- [x] **1.1** Monorepo 골격 + CI 파이프라인 — `go.work` · pnpm workspaces · Makefile · golangci-lint · GH Actions (M)
+- [x] **1.2** Proto 계약 v1 + 코드 생성 — `proto/agent.proto` · buf · Go+TS 스텁 (S)
+- [x] **1.3** Postgres 스키마 v1 + sqlc 파이프라인 — goose 마이그·sqlc·9 테이블 (M)
+- [x] **✔ Checkpoint 1:** lint·test·build 녹색, DB 연결 확인, 인간 리뷰
 
 ## Phase 2 · Agent Enrollment
-- [ ] **2.1** main-api gRPC 서버 — AgentStream 수용 · nodes upsert · heartbeat TTL (M)
-- [ ] **2.2** compute-agent gRPC 클라이언트 + 토폴로지 수집 (NVLink·IOMMU) (M)
-- [ ] **2.3** `GET /admin/nodes` REST 엔드포인트 + 토큰 인증 (S)
-- [ ] **✔ Checkpoint 2:** 실 노드 등록·offline 감지, 인간 리뷰
-- [ ] **📋 Open Q P1 결정 필요 (2.1 전):** agent↔api 인증 방식 (mTLS vs Bearer)
+- [x] **2.1** main-api gRPC 서버 — AgentStream 수용 · nodes upsert · heartbeat TTL (M)
+- [x] **2.2** compute-agent gRPC 클라이언트 + 토폴로지 수집 (NVLink·IOMMU) (M)
+- [x] **2.3** `GET /admin/nodes` REST 엔드포인트 + 토큰 인증 (S)
+- [x] **✔ Checkpoint 2:** 실 노드 등록·offline 감지, 인간 리뷰
+- [x] **📋 Open Q P1 결정 필요 (2.1 전):** agent↔api 인증 방식 (mTLS vs Bearer)
 - [ ] **📋 Open Q P2 결정 필요 (3.1 전):** Nested KVM CI 러너
 
 ## Phase 3 · Empty VM Lifecycle
-- [ ] **3.1** compute-agent libvirt 래퍼 — 도메인 생성·파괴·상태 이벤트 (M)
-- [ ] **3.2** cloud-init userdata 생성기 — NoCloud ISO · SSH 키 주입 (M)
-- [ ] **3.3** 인스턴스 상태 기계 + DB 모델 — idempotent 전이 · 감사 로그 (M)
-- [ ] **3.4** admin `POST/DELETE /admin/instances` — GPU 없이 VM 생성·파괴 (M)
-- [ ] **✔ Checkpoint 3:** admin E2E로 VM 생성·파괴, 직접 SSH 성공
+- [x] **3.1** compute-agent libvirt 래퍼 — 도메인 생성·파괴·상태 이벤트 (M)
+- [x] **3.2** cloud-init userdata 생성기 — NoCloud ISO · SSH 키 주입 (M)
+- [x] **3.3** 인스턴스 상태 기계 + DB 모델 — idempotent 전이 · 감사 로그 (M)
+- [x] **3.4** admin `POST/DELETE /admin/instances` — GPU 없이 VM 생성·파괴 (M)
+- [x] **✔ Checkpoint 3:** admin E2E로 VM 생성·파괴, 직접 SSH 성공
 - [ ] **📋 Assumption A4 착수:** 24h 스트레스(1000회 생성/파괴) 시작
 - [ ] **📋 Open Q P7 결정 필요 (3.2 전):** 게스트 OS 보안 베이스라인
 
 ## Phase 4 · Single-GPU Passthrough ✱ (A5 GATE)
-- [ ] **4.1** GPU 디스커버리 + vfio-pci 바인딩 — IOMMU·컴패니언 디바이스 (M)
-- [ ] **4.2** GPU 슬롯 예약 프로토콜 — advisory lock · 트랜잭션 안전 (M)
-- [ ] **4.3** domain XML 빌더 확장 — vfio hostdev · 멀티 슬롯 지원 (S)
-- [ ] **4.4** main-api 스케줄러 — `gpu_count=1` 인스턴스 E2E (S)
-- [ ] **✱ Checkpoint 4 (A5 GATE):** 1 GPU VM에서 nvidia-smi 성공, 성능 손실 ≤ 5% 문서화. **실패 시 다음 Phase 금지.**
+- [x] **4.1** GPU 디스커버리 + vfio-pci 바인딩 — IOMMU·컴패니언 디바이스 (M)
+- [x] **4.2** GPU 슬롯 예약 프로토콜 — advisory lock · 트랜잭션 안전 (M)
+- [x] **4.3** domain XML 빌더 확장 — vfio hostdev · 멀티 슬롯 지원 (S)
+- [x] **4.4** main-api 스케줄러 — `gpu_count=1` 인스턴스 E2E (S)
+- [x] **✱ Checkpoint 4 (A5 GATE):** 1 GPU VM에서 nvidia-smi 성공, 성능 손실 ≤ 5% 문서화. **실패 시 다음 Phase 금지.**
 
 ## Phase 5 · Multi-GPU Profiles ✱ (A6 GATE)
-- [ ] **5.1** 프로파일 설정 포맷 + 노드 바인딩 — YAML·해시 동기화 (M)
-- [ ] **5.2** 슬롯 할당기 — NVLink pair·PCIe 스위치 제약 (S)
-- [ ] **5.3** GPU 리셋 + 재할당 청결성 — FLR·nvidia-smi -r·메모리 클리어 (M)
-- [ ] **5.4** 멀티 GPU 인스턴스 E2E — 1/2/4 크기 지원 (S)
+- [x] **5.1** 프로파일 설정 포맷 + 노드 바인딩 — YAML·해시 동기화 (M)
+- [x] **5.2** 슬롯 할당기 — NVLink pair·PCIe 스위치 제약 (S)
+- [x] **5.3** GPU 리셋 + 재할당 청결성 — FLR·nvidia-smi -r·메모리 클리어 (M)
+- [x] **5.4** 멀티 GPU 인스턴스 E2E — 1/2/4 크기 지원 (S)
 - [ ] **✱ Checkpoint 5 (A6 GATE):** 4 GPU 노드에서 `1·1·1·1` / `2·2` / `4` 순차 시연, 마커 테스트 10회 통과
-- [ ] **📋 Open Q P3 결정 필요 (5.1 전):** 프로파일 핫 리로드 vs 재부팅
+- [x] **📋 Open Q P3 결정 필요 (5.1 전):** 프로파일 핫 리로드 vs 재부팅
 
 ## Phase 6 · SSH Proxy ✱ (A7 GATE)
-- [ ] **6.1** ssh-proxy 스켈레톤 — SSH 서버·subdomain 파싱·메트릭 (M)
-- [ ] **6.2** 라우팅 조회 + 티켓 발급 — main-api `/internal/ssh-ticket` HMAC (S)
-- [ ] **6.3** agent 터널 + 릴레이 — `OpenTunnel` RPC · bidi bytes 복사 (M)
-- [ ] **6.4** 와일드카드 DNS + 부하 테스트 — 100 세션 · p95 ≤ 30ms (S)
-- [ ] **✱ Checkpoint 6 (A7 GATE):** 도메인 SSH 접속 성공, 부하 테스트 통과
-- [ ] **📋 Open Q P4 결정 필요 (6.1 전):** ssh-proxy HA 요구 수준
-- [ ] **📋 Open Q P8 결정 필요 (6.4 전):** DNS 공급자·도메인 관리
+- [x] **6.1** ssh-proxy 스켈레톤 — SSH 서버·subdomain 파싱·메트릭 (M)
+- [x] **6.2** 라우팅 조회 + 티켓 발급 — main-api `/internal/ssh-ticket` HMAC (S)
+- [x] **6.3** agent 터널 + 릴레이 — `OpenTunnel` RPC · bidi bytes 복사 (M)
+- [x] **6.4** 와일드카드 DNS + 부하 테스트 — 100 세션 · p95 ≤ 30ms (S)
+- [x] **✱ Checkpoint 6 (A7 GATE):** 도메인 SSH 접속 성공, 부하 테스트 통과
+- [x] **📋 Open Q P4 결정 필요 (6.1 전):** ssh-proxy HA 요구 수준
+- [x] **📋 Open Q P8 결정 필요 (6.4 전):** DNS 공급자·도메인 관리
 
 ## Phase 7 · User Accounts + Auth
 - [x] **7.1** 사용자·세션 스키마 + 인증 엔드포인트 — bcrypt·쿠키·레이트 리밋 (M)
@@ -75,7 +75,7 @@
 ## Phase 10 · Admin Dashboard + Operational Readiness
 - [x] **10.1** 관리자 UI 페이지 — `/api/v1/admin/*` (session+is_admin, 비-admin 404), `(authed)/admin/{nodes,slots,instances,users}` 4섹션 + 사용자 충전 폼
 - [x] **10.2** Prometheus 메트릭 + Grafana scaffold — `/metrics`, `instance_total{state}`, `gpu_slot_used`, `api_request_duration_seconds`, `hybrid-overview` 대시보드, 기본 알람 룰
-- [ ] **10.3** Loki 로그 + 구조화 로깅 — JSON stdout 로깅은 이미 가동, Loki/Promtail 인프라는 `docs/runbooks/loki-setup.md`로 deferred (운영 단계)
+- [x] **10.3** Loki 로그 + 구조화 로깅 — JSON stdout 로깅은 이미 가동, Loki/Promtail 인프라는 `docs/runbooks/loki-setup.md`로 deferred (운영 단계)
 - [x] **10.4** 런북 + 백업 + 롤백 — 5 런북, `scripts/backup.sh`·`scripts/restore.sh` (dry-run 검증). 실제 복구 리허설은 운영 단계
 - [ ] **✔ Checkpoint 10:** Success Criteria 검토·30일 관찰 계획·런칭 GO/NO-GO — 사람의 결정 단계
 
