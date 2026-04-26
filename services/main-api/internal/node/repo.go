@@ -17,9 +17,17 @@ type Repo interface {
 	UpsertOnline(ctx context.Context, in UpsertInput) (dbstore.Node, error)
 	TouchHeartbeat(ctx context.Context, id uuid.UUID) error
 	UpdateTopology(ctx context.Context, id uuid.UUID, topologyJSON []byte) error
-	MarkStaleOffline(ctx context.Context, before time.Time) (int64, error)
+	MarkStaleOffline(ctx context.Context, before time.Time) ([]uuid.UUID, error)
+	NonTerminalInstancesForNode(ctx context.Context, nodeID uuid.UUID) ([]NodeInstance, error)
 	List(ctx context.Context) ([]dbstore.Node, error)
 	Get(ctx context.Context, id uuid.UUID) (dbstore.Node, error)
+}
+
+// NodeInstance is a (id, state) pair used by the stale-node reaper. We
+// don't need the rest of the row.
+type NodeInstance struct {
+	ID    uuid.UUID
+	State dbstore.InstanceState
 }
 
 // UpsertInput is the subset of fields Register sets on a node.
@@ -36,7 +44,8 @@ type UpsertInput struct {
 type Queries interface {
 	UpsertNode(ctx context.Context, arg dbstore.UpsertNodeParams) (dbstore.Node, error)
 	TouchNodeHeartbeat(ctx context.Context, id uuid.UUID) error
-	MarkStaleNodesOffline(ctx context.Context, cutoff pgtype.Timestamptz) (int64, error)
+	MarkStaleNodesOfflineReturning(ctx context.Context, cutoff pgtype.Timestamptz) ([]uuid.UUID, error)
+	ListNonTerminalInstancesForNode(ctx context.Context, nodeID uuid.UUID) ([]dbstore.ListNonTerminalInstancesForNodeRow, error)
 	GetNode(ctx context.Context, id uuid.UUID) (dbstore.Node, error)
 	ListNodes(ctx context.Context) ([]dbstore.Node, error)
 	GetDefaultZone(ctx context.Context) (dbstore.Zone, error)
@@ -75,8 +84,25 @@ func (r *DBRepo) UpdateTopology(_ context.Context, _ uuid.UUID, _ []byte) error 
 }
 
 // MarkStaleOffline sweeps nodes whose last heartbeat is older than before.
-func (r *DBRepo) MarkStaleOffline(ctx context.Context, before time.Time) (int64, error) {
-	return r.q.MarkStaleNodesOffline(ctx, pgtype.Timestamptz{Time: before, Valid: true})
+// Returns the ids of nodes that just transitioned online→offline so the
+// caller can fail any non-terminal instances pinned to them.
+func (r *DBRepo) MarkStaleOffline(ctx context.Context, before time.Time) ([]uuid.UUID, error) {
+	return r.q.MarkStaleNodesOfflineReturning(ctx, pgtype.Timestamptz{Time: before, Valid: true})
+}
+
+// NonTerminalInstancesForNode lists pending/provisioning/running instances
+// pinned to a node — used by the stale-node reaper to fail them so their
+// slots are released.
+func (r *DBRepo) NonTerminalInstancesForNode(ctx context.Context, nodeID uuid.UUID) ([]NodeInstance, error) {
+	rows, err := r.q.ListNonTerminalInstancesForNode(ctx, nodeID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]NodeInstance, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, NodeInstance{ID: row.ID, State: row.State})
+	}
+	return out, nil
 }
 
 // List returns all known nodes.

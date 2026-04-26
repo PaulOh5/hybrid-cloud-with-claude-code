@@ -207,6 +207,57 @@ func (q *Queries) ListInstances(ctx context.Context, ownerID uuid.NullUUID) ([]I
 	return items, nil
 }
 
+const listInstancesByOwnerAndIDPrefix = `-- name: ListInstancesByOwnerAndIDPrefix :many
+select id, owner_id, node_id, name, state, memory_mb, vcpus, gpu_count, slot_indices, ssh_pubkeys, vm_internal_ip, image_ref, error_message, created_at, updated_at from instances
+where owner_id = $1
+  and id::text like $2 || '%'
+limit 2
+`
+
+type ListInstancesByOwnerAndIDPrefixParams struct {
+	OwnerID uuid.NullUUID `json:"owner_id"`
+	Column2 pgtype.Text   `json:"column_2"`
+}
+
+// ssh-proxy → main-api ticket flow looks up an instance by its short-form
+// subdomain prefix scoped to the authenticated owner. LIMIT 2 lets the caller
+// detect ambiguity without paying for the full match set.
+func (q *Queries) ListInstancesByOwnerAndIDPrefix(ctx context.Context, arg ListInstancesByOwnerAndIDPrefixParams) ([]Instance, error) {
+	rows, err := q.db.Query(ctx, listInstancesByOwnerAndIDPrefix, arg.OwnerID, arg.Column2)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Instance{}
+	for rows.Next() {
+		var i Instance
+		if err := rows.Scan(
+			&i.ID,
+			&i.OwnerID,
+			&i.NodeID,
+			&i.Name,
+			&i.State,
+			&i.MemoryMb,
+			&i.Vcpus,
+			&i.GpuCount,
+			&i.SlotIndices,
+			&i.SshPubkeys,
+			&i.VmInternalIp,
+			&i.ImageRef,
+			&i.ErrorMessage,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const updateInstanceState = `-- name: UpdateInstanceState :one
 update instances
 set state          = $2,

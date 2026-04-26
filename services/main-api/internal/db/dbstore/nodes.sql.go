@@ -111,6 +111,41 @@ func (q *Queries) ListNodes(ctx context.Context) ([]Node, error) {
 	return items, nil
 }
 
+const listNonTerminalInstancesForNode = `-- name: ListNonTerminalInstancesForNode :many
+select id, state
+from instances
+where node_id = $1
+  and state in ('pending', 'provisioning', 'running')
+`
+
+type ListNonTerminalInstancesForNodeRow struct {
+	ID    uuid.UUID     `json:"id"`
+	State InstanceState `json:"state"`
+}
+
+// Counterpart to MarkStaleNodesOfflineReturning — every instance on a
+// newly-offline node whose state is still pending/provisioning/running
+// needs to be flipped to failed so its slot is released.
+func (q *Queries) ListNonTerminalInstancesForNode(ctx context.Context, nodeID uuid.UUID) ([]ListNonTerminalInstancesForNodeRow, error) {
+	rows, err := q.db.Query(ctx, listNonTerminalInstancesForNode, nodeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListNonTerminalInstancesForNodeRow{}
+	for rows.Next() {
+		var i ListNonTerminalInstancesForNodeRow
+		if err := rows.Scan(&i.ID, &i.State); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const markStaleNodesOffline = `-- name: MarkStaleNodesOffline :execrows
 update nodes
 set status     = 'offline',
@@ -125,6 +160,39 @@ func (q *Queries) MarkStaleNodesOffline(ctx context.Context, dollar_1 pgtype.Tim
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const markStaleNodesOfflineReturning = `-- name: MarkStaleNodesOfflineReturning :many
+update nodes
+set status     = 'offline',
+    updated_at = now()
+where status <> 'offline'
+  and (last_heartbeat_at is null or last_heartbeat_at < $1::timestamptz)
+returning id
+`
+
+// Same as MarkStaleNodesOffline but returns the ids of nodes that just
+// transitioned. Used by the stale sweeper to fail any non-terminal
+// instances pinned to that node so their slots are released and the
+// user-facing state machine catches up to the underlying agent loss.
+func (q *Queries) MarkStaleNodesOfflineReturning(ctx context.Context, dollar_1 pgtype.Timestamptz) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, markStaleNodesOfflineReturning, dollar_1)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []uuid.UUID{}
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const touchNodeHeartbeat = `-- name: TouchNodeHeartbeat :exec

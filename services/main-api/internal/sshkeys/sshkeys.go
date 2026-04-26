@@ -100,6 +100,21 @@ func (r *Repo) Delete(ctx context.Context, userID, id uuid.UUID) error {
 	return nil
 }
 
+// LookupUserByFingerprint resolves the SHA-256 fingerprint presented by an
+// SSH client to its owning user. Returns ErrNotFound when no key matches.
+// ssh-proxy uses this to authenticate the user before issuing a tunnel
+// ticket.
+func (r *Repo) LookupUserByFingerprint(ctx context.Context, fingerprint string) (uuid.UUID, error) {
+	row, err := r.q.LookupSSHKeyByFingerprint(ctx, fingerprint)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return uuid.Nil, ErrNotFound
+		}
+		return uuid.Nil, fmt.Errorf("lookup ssh_key fingerprint: %w", err)
+	}
+	return row.UserID, nil
+}
+
 // PubkeysForUser returns the canonical OpenSSH lines for cloud-init.
 func (r *Repo) PubkeysForUser(ctx context.Context, userID uuid.UUID) ([]string, error) {
 	rows, err := r.q.ListSSHKeysForUser(ctx, userID)

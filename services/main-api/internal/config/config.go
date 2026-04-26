@@ -22,9 +22,10 @@ type Config struct {
 	SweepInterval time.Duration
 
 	// Phase 7: user-facing auth.
-	SessionTTL   time.Duration
-	CookieSecure bool
-	CookieDomain string
+	SessionTTL       time.Duration
+	CookieSecure     bool
+	CookieDomain     string
+	TrustedProxyHops int
 
 	// Phase 9: billing.
 	BillingTick      time.Duration // 0 disables the worker
@@ -45,9 +46,10 @@ func FromEnv() (Config, error) {
 		HeartbeatTTL:  durationEnv("MAIN_API_HEARTBEAT_TTL", 60*time.Second),
 		SweepInterval: durationEnv("MAIN_API_SWEEP_INTERVAL", 10*time.Second),
 
-		SessionTTL:   durationEnv("MAIN_API_SESSION_TTL", 7*24*time.Hour),
-		CookieSecure: boolEnv("MAIN_API_COOKIE_SECURE", false),
-		CookieDomain: os.Getenv("MAIN_API_COOKIE_DOMAIN"),
+		SessionTTL:       durationEnv("MAIN_API_SESSION_TTL", 7*24*time.Hour),
+		CookieSecure:     boolEnv("MAIN_API_COOKIE_SECURE", false),
+		CookieDomain:     os.Getenv("MAIN_API_COOKIE_DOMAIN"),
+		TrustedProxyHops: intEnv("MAIN_API_TRUSTED_PROXY_HOPS", 0),
 
 		BillingTick:      durationEnv("MAIN_API_BILLING_TICK", 30*time.Second),
 		BillingRatesPath: os.Getenv("MAIN_API_BILLING_RATES_PATH"),
@@ -62,11 +64,16 @@ func FromEnv() (Config, error) {
 	if c.AgentToken == "" {
 		return c, errors.New("MAIN_API_AGENT_TOKEN is required")
 	}
-	// Internal token + tunnel secret are optional; missing means the ssh
-	// ticket endpoint is disabled. Enforced together so an operator can't
-	// accidentally ship a signer without auth.
+	// Internal token + tunnel secret are optional in dev (CookieSecure=false)
+	// so localhost bring-up doesn't need every variable wired. Production
+	// (CookieSecure=true) must have both: the ssh-ticket endpoint is the
+	// only way users reach their VMs, and silently disabling it would
+	// look like a healthy boot but every SSH attempt would fail at runtime.
 	if (c.InternalToken == "") != (len(c.TunnelSecret) == 0) {
 		return c, errors.New("MAIN_API_INTERNAL_TOKEN and MAIN_API_TUNNEL_SECRET must be set together")
+	}
+	if c.CookieSecure && c.InternalToken == "" {
+		return c, errors.New("MAIN_API_INTERNAL_TOKEN and MAIN_API_TUNNEL_SECRET are required when MAIN_API_COOKIE_SECURE=true (production)")
 	}
 	if len(c.TunnelSecret) > 0 && len(c.TunnelSecret) < 16 {
 		return c, errors.New("MAIN_API_TUNNEL_SECRET must be at least 16 bytes")
@@ -90,6 +97,18 @@ func boolEnv(k string, fallback bool) bool {
 		return b
 	}
 	return fallback
+}
+
+func intEnv(k string, fallback int) int {
+	v := os.Getenv(k)
+	if v == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return fallback
+	}
+	return n
 }
 
 func durationEnv(k string, fallback time.Duration) time.Duration {

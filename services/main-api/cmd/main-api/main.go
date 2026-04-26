@@ -78,6 +78,17 @@ func main() {
 	instances := instance.NewRepo(pool, queries)
 	slots := slot.NewRepo(pool, queries).WithLogger(log)
 
+	// Slot reservations are transient state owned by this process; any
+	// reservation still 'reserved' on boot means the previous main-api
+	// died between Reserve and BindToInstance. Free them so capacity is
+	// not silently lost across restarts.
+	if released, err := slots.RecoverOrphanReservations(ctx); err != nil {
+		log.Error("recover orphan reservations", "err", err)
+		os.Exit(1)
+	} else if released > 0 {
+		log.Warn("released orphan slot reservations on boot", "count", released)
+	}
+
 	zoneID, err := nodes.DefaultZoneID(ctx)
 	if err != nil {
 		log.Error("default zone", "err", err)
@@ -154,6 +165,7 @@ func main() {
 			Nodes:     nodes,
 			Registry:  registry,
 			Signer:    signer,
+			SSHKeys:   sshKeysRepo,
 		}, cfg.InternalToken)
 		log.Info("ssh-ticket endpoint enabled", "ttl", cfg.TicketTTL)
 	}
@@ -165,9 +177,10 @@ func main() {
 		Users:   authRepo,
 		Limiter: loginLimiter,
 		Config: api.AuthConfig{
-			SessionTTL:   cfg.SessionTTL,
-			CookieSecure: cfg.CookieSecure,
-			CookieDomain: cfg.CookieDomain,
+			SessionTTL:       cfg.SessionTTL,
+			CookieSecure:     cfg.CookieSecure,
+			CookieDomain:     cfg.CookieDomain,
+			TrustedProxyHops: cfg.TrustedProxyHops,
 		},
 	}
 	userRouter := api.NewUserRouter(api.UserHandlers{

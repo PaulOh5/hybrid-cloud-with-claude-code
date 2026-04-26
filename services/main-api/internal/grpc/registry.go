@@ -3,11 +3,18 @@ package grpcsrv
 import (
 	"errors"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 
 	agentv1 "hybridcloud/shared/proto/agent/v1"
 )
+
+// agentSendTimeout caps how long Send waits when an agent's send buffer
+// is full. A wedged or slow-reading agent should not park HTTP handlers
+// indefinitely — return ErrAgentNotConnected so the caller can fail fast
+// and let the next Provision attempt see fresh state.
+const agentSendTimeout = 2 * time.Second
 
 // AgentRegistry tracks active compute-agent streams so REST handlers can push
 // ControlMessages (CreateInstance, DestroyInstance, Ping) to a specific node
@@ -55,7 +62,9 @@ func (r *AgentRegistry) Register(nodeID uuid.UUID, ch chan<- *agentv1.ControlMes
 }
 
 // Send delivers msg to the registered stream. It returns ErrAgentNotConnected
-// when the node is not currently connected.
+// when the node is not currently connected or when the agent's send buffer
+// has been blocked for longer than agentSendTimeout (indicating a slow or
+// stuck reader on the agent side).
 func (r *AgentRegistry) Send(nodeID uuid.UUID, msg *agentv1.ControlMessage) error {
 	r.mu.RLock()
 	entry, ok := r.nodes[nodeID]
@@ -63,8 +72,14 @@ func (r *AgentRegistry) Send(nodeID uuid.UUID, msg *agentv1.ControlMessage) erro
 	if !ok {
 		return ErrAgentNotConnected
 	}
-	entry.ch <- msg
-	return nil
+	timer := time.NewTimer(agentSendTimeout)
+	defer timer.Stop()
+	select {
+	case entry.ch <- msg:
+		return nil
+	case <-timer.C:
+		return ErrAgentNotConnected
+	}
 }
 
 // Connected reports whether an agent is currently registered.

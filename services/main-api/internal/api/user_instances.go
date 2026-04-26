@@ -55,15 +55,15 @@ func (h *UserInstanceHandlers) Get(w http.ResponseWriter, r *http.Request) {
 	}
 	inst, err := h.Admin.Instances.Get(r.Context(), id)
 	if err != nil {
-		// Both "missing row" and a generic lookup failure collapse to 404
-		// here so user-A cannot probe whether user-B's UUIDs exist. A real
-		// pgx.ErrNoRows is the common path; other errors are rare and the
-		// no-enumerate property matters more than fidelity.
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "not_found", "instance not found")
 			return
 		}
-		writeError(w, http.StatusNotFound, "not_found", err.Error())
+		// Don't fold transport / DB errors into 404 — that masks real
+		// outages as ordinary not-found responses and degrades incident
+		// triage. The body stays generic so we still don't leak whether
+		// the row exists.
+		writeError(w, http.StatusInternalServerError, "lookup_failed", "instance lookup failed")
 		return
 	}
 	if !ownsInstance(inst, user) {
@@ -90,7 +90,11 @@ func (h *UserInstanceHandlers) Delete(w http.ResponseWriter, r *http.Request) {
 	}
 	inst, err := h.Admin.Instances.Get(r.Context(), id)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "not_found", "instance not found")
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "not_found", "instance not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "lookup_failed", "instance lookup failed")
 		return
 	}
 	if !ownsInstance(inst, user) {
@@ -129,10 +133,12 @@ func (h *UserInstanceHandlers) Delete(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusAccepted)
 }
 
-// ownsInstance reports whether inst.OwnerID == user.ID. Admins also pass.
+// ownsInstance reports whether inst.OwnerID == user.ID. The user-facing
+// routes intentionally do NOT grant admins access to other users'
+// instances — admins should reach for /api/v1/admin/instances or the
+// bearer-token /admin/* surface so audit logs distinguish operator
+// actions from end-user actions. Without this separation, admin access
+// via user routes appears in audit as if the owner did it.
 func ownsInstance(inst dbstore.Instance, user dbstore.User) bool {
-	if user.IsAdmin {
-		return true
-	}
 	return inst.OwnerID.Valid && inst.OwnerID.UUID == user.ID
 }

@@ -42,6 +42,13 @@ type AuthConfig struct {
 	CookieSecure bool   // false in dev, true in production
 	CookieDomain string // optional; "" means no Domain attribute
 	CookiePath   string // typically "/"
+	// TrustedProxyHops controls how many right-most entries of
+	// X-Forwarded-For we may consume. Each entry corresponds to one
+	// reverse proxy hop in front of main-api. Set to the number of
+	// proxies whose XFF appends we actually trust (typically 1 in a
+	// load-balancer-fronted deployment, 0 when main-api is exposed
+	// directly). 0 means ignore XFF entirely and use RemoteAddr.
+	TrustedProxyHops int
 }
 
 // AuthHandlers wires the /api/v1/auth/* handlers.
@@ -118,7 +125,7 @@ func (h *AuthHandlers) Login(w http.ResponseWriter, r *http.Request) {
 	defer func() { _ = r.Body.Close() }()
 
 	if h.Limiter != nil {
-		if !h.Limiter.Allow(clientIP(r)) {
+		if !h.Limiter.Allow(clientIP(r, h.Config.TrustedProxyHops)) {
 			writeError(w, http.StatusTooManyRequests, "rate_limited",
 				"too many login attempts, try again later")
 			return
@@ -213,15 +220,25 @@ func decodeJSON(r io.Reader, v any) error {
 	return json.Unmarshal(body, v)
 }
 
-// clientIP extracts the source IP for rate-limiting. It prefers
-// X-Forwarded-For's first entry when set (the deployment puts main-api behind
-// a reverse proxy), falling back to RemoteAddr.
-func clientIP(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		if comma := strings.Index(xff, ","); comma > 0 {
-			return strings.TrimSpace(xff[:comma])
+// clientIP extracts the source IP for rate-limiting. trustedHops is the
+// number of reverse-proxy hops in front of main-api whose X-Forwarded-For
+// appends we trust; only the right-most trustedHops entries are considered
+// authoritative, so a client can never set its own XFF prefix to spoof a
+// different rate-limit key. trustedHops==0 disables XFF entirely.
+func clientIP(r *http.Request, trustedHops int) string {
+	if trustedHops > 0 {
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			parts := strings.Split(xff, ",")
+			// Pick the leftmost entry within the trusted suffix — anything
+			// further left was set by an upstream we don't trust.
+			idx := len(parts) - trustedHops
+			if idx < 0 {
+				idx = 0
+			}
+			if ip := strings.TrimSpace(parts[idx]); ip != "" {
+				return ip
+			}
 		}
-		return strings.TrimSpace(xff)
 	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {

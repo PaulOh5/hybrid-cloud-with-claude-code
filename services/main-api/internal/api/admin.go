@@ -4,6 +4,7 @@
 package api
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -95,7 +96,7 @@ func RequireAdminToken(expected string) func(http.Handler) http.Handler {
 			}
 			h := r.Header.Get("Authorization")
 			token := strings.TrimPrefix(h, "Bearer ")
-			if token == h || token != expected {
+			if token == h || subtle.ConstantTimeCompare([]byte(token), []byte(expected)) != 1 {
 				writeError(w, http.StatusUnauthorized, "unauthenticated", "invalid or missing bearer token")
 				return
 			}

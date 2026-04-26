@@ -12,6 +12,7 @@ import (
 	"hybridcloud/services/main-api/internal/db/dbstore"
 )
 
+
 // TxBeginner is the narrow subset of pgxpool.Pool / pgx.Conn we need to open
 // transactions. pgxpool.Pool implements this interface.
 type TxBeginner interface {
@@ -171,6 +172,18 @@ func (r *Repo) Delete(ctx context.Context, id uuid.UUID) error {
 // nil-valued). Phase 3 admin path passes OwnerID.Valid=false.
 func (r *Repo) ListForOwner(ctx context.Context, ownerID uuid.NullUUID) ([]dbstore.Instance, error) {
 	return r.queries.ListInstances(ctx, ownerID)
+}
+
+// FindByOwnerAndIDPrefix resolves the short subdomain form (`{prefix}.zone`)
+// scoped to a single owner. Phase 6 ssh-proxy + Phase 9 audit both route by
+// owner so a fingerprint mismatch never leaks instance existence.
+func (r *Repo) FindByOwnerAndIDPrefix(
+	ctx context.Context, ownerID uuid.UUID, prefix string,
+) ([]dbstore.Instance, error) {
+	return r.queries.ListInstancesByOwnerAndIDPrefix(ctx, dbstore.ListInstancesByOwnerAndIDPrefixParams{
+		OwnerID: uuid.NullUUID{UUID: ownerID, Valid: true},
+		Column2: pgtype.Text{String: prefix, Valid: true},
+	})
 }
 
 // --- internals -------------------------------------------------------------

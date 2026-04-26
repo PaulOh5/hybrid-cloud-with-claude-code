@@ -31,7 +31,12 @@ func (f *fakeRepo) TouchHeartbeat(_ context.Context, _ uuid.UUID) error { return
 func (f *fakeRepo) UpdateTopology(_ context.Context, _ uuid.UUID, _ []byte) error {
 	return nil
 }
-func (f *fakeRepo) MarkStaleOffline(_ context.Context, _ time.Time) (int64, error) { return 0, nil }
+func (f *fakeRepo) MarkStaleOffline(_ context.Context, _ time.Time) ([]uuid.UUID, error) {
+	return nil, nil
+}
+func (f *fakeRepo) NonTerminalInstancesForNode(_ context.Context, _ uuid.UUID) ([]node.NodeInstance, error) {
+	return nil, nil
+}
 func (f *fakeRepo) List(_ context.Context) ([]dbstore.Node, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

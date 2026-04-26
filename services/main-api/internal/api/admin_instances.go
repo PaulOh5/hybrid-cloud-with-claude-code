@@ -33,6 +33,7 @@ type InstanceRepo interface {
 	Get(ctx context.Context, id uuid.UUID) (dbstore.Instance, error)
 	Delete(ctx context.Context, id uuid.UUID) error
 	ListForOwner(ctx context.Context, ownerID uuid.NullUUID) ([]dbstore.Instance, error)
+	FindByOwnerAndIDPrefix(ctx context.Context, ownerID uuid.UUID, prefix string) ([]dbstore.Instance, error)
 }
 
 // AgentDispatcher is the subset of grpcsrv.AgentRegistry the handler uses.

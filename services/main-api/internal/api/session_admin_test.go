@@ -61,13 +61,11 @@ func TestAdminGate_NotAuthenticated_404(t *testing.T) {
 	store := newFakeUserStore()
 	router := makeAdminRouter(t, store, &stubAdminQueries{})
 	rr := sendWithCookie(t, router, http.MethodGet, "/api/v1/admin/users", nil, nil)
-	// 401 from RequireUser would leak existence; ensure we still get 404.
-	// Implementation: RequireUser runs first → 401. RequireAdmin order
-	// matters. Per spec we want 404 to non-admins; for unauthenticated we
-	// return 401 (tells API consumers they need to log in). This test pins
-	// the actual behavior.
-	if rr.Code != http.StatusUnauthorized {
-		t.Fatalf("unauthenticated → 401, got %d", rr.Code)
+	// Admin routes 404 to unauthenticated probes too — a 401 would tell an
+	// attacker that the route exists and is admin-gated, which is the
+	// enumeration leak we want to avoid.
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("unauthenticated → 404, got %d", rr.Code)
 	}
 }
 
