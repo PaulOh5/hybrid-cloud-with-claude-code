@@ -64,18 +64,30 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SHA: ${{ needs.resolve-sha.outputs.sha }}
         # No checkout in this job, so gh CLI can't infer the repo from a git
-        # remote — pass it explicitly via $GITHUB_REPOSITORY.
+        # remote — pass it explicitly via $GITHUB_REPOSITORY. The retry loop
+        # absorbs the common case where the operator triggers Deploy right
+        # after a push and CI for that SHA is still queued or running. 20×30s
+        # = 10 min cap, which is comfortably above the typical CI duration.
         run: |
-          status=$(gh run list --workflow=ci.yml --commit "$SHA" \
-            --repo "$GITHUB_REPOSITORY" \
-            --json status,conclusion --limit 1 \
-            | jq -r '.[0] | "\(.status):\(.conclusion)"')
-          echo "CI status for $SHA: $status"
-          case "$status" in
-            completed:success)             echo "CI green — proceeding" ;;
-            null:null|:|null:*|:*|*:null)  echo "::error::no CI run found for $SHA"; exit 1 ;;
-            *)                             echo "::error::CI not green: $status"; exit 1 ;;
-          esac
+          for attempt in $(seq 1 20); do
+            status=$(gh run list --workflow=ci.yml --commit "$SHA" \
+              --repo "$GITHUB_REPOSITORY" \
+              --json status,conclusion --limit 1 \
+              | jq -r '.[0] | "\(.status):\(.conclusion)"')
+            echo "[$attempt] CI status for $SHA: $status"
+            case "$status" in
+              completed:success)
+                echo "CI green — proceeding"; exit 0 ;;
+              completed:*)
+                echo "::error::CI completed but not success: $status"; exit 1 ;;
+              in_progress:*|queued:*|requested:*|waiting:*|pending:*|null:null|:|null:*|*:null)
+                echo "CI not yet completed — sleeping 30s"; sleep 30 ;;
+              *)
+                echo "::error::unexpected CI status: $status"; exit 1 ;;
+            esac
+          done
+          echo "::error::timed out waiting for CI on $SHA"
+          exit 1
 
   build:
     name: Build artifacts
