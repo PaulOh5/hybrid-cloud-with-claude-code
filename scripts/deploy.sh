@@ -31,7 +31,11 @@ BIN_DIR="$DEPLOY_ROOT/bin"
 WEB_DIR="$DEPLOY_ROOT/web"
 DEPLOYS_DIR="$DEPLOY_ROOT/deploys"
 ENV_FILE="$DEPLOY_ROOT/.env.production"
-BACKUP_DIR="${BACKUP_DIR:-$HOME/backups}"
+# Export so backup.sh / restore.sh in subshells write to / read from the same
+# location the rollback path looks in. Without export, backup.sh falls back
+# to its own default (./backups, relative to cwd) and the LATEST_BACKUP
+# lookup below sees an empty dir.
+export BACKUP_DIR="${BACKUP_DIR:-$HOME/backups}"
 
 mkdir -p "$DEPLOYS_DIR" "$BIN_DIR" "$WEB_DIR" "$BACKUP_DIR"
 LOG="$DEPLOYS_DIR/$(date -u +%Y%m%dT%H%M%S)-${COMMIT_SHA:0:8}.log"
