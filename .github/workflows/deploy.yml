@@ -37,7 +37,7 @@ jobs:
     outputs:
       sha: ${{ steps.resolve.outputs.sha }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - id: resolve
         env:
           INPUT_SHA: ${{ inputs.sha }}
@@ -97,7 +97,7 @@ jobs:
     if: ${{ always() && needs.resolve-sha.result == 'success' && (needs.verify-ci.result == 'success' || needs.verify-ci.result == 'skipped') }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           ref: ${{ needs.resolve-sha.outputs.sha }}
 
