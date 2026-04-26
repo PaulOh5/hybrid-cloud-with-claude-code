@@ -3,7 +3,7 @@
 # Two layouts defined; the active one is applied. Switching requires every
 # slot to be free (main-api's SyncFromProfile refuses SyncDegraded otherwise).
 
-active: "1x2"
+active: "2x1"
 
 layouts:
   # One slot with both GPUs — lets a single VM see 2× RTX 5090.
