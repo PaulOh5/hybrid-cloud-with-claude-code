@@ -120,7 +120,7 @@ jobs:
           go build -trimpath -ldflags="-s -w -X main.commit=${{ needs.resolve-sha.outputs.sha }}" \
             -o dist/compute-agent ./services/compute-agent/cmd/compute-agent
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: ${{ env.PNPM_VERSION }}
       - uses: actions/setup-node@v6
