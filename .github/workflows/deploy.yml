@@ -157,68 +157,41 @@ jobs:
   deploy:
     name: Deploy to h20a
     needs: [resolve-sha, build]
-    runs-on: ubuntu-latest
-    environment: production  # GitHub Environments — required-reviewers can gate
+    # Self-hosted runner runs ON h20a as the `hybrid` user. The host's
+    # public IP is geo-blocked for foreign sources, so SSH from
+    # GitHub-hosted runners isn't possible — outbound from h20a is.
+    runs-on: [self-hosted, h20a, production]
+    environment: production
     steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.resolve-sha.outputs.sha }}
-
       - uses: actions/download-artifact@v4
         with:
           name: deploy-${{ needs.resolve-sha.outputs.sha }}
           path: dist/
 
-      - name: Configure SSH
-        uses: webfactory/ssh-agent@v0.9.0
-        with:
-          ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
-
-      - name: Pin known_hosts
+      - name: Stage artifacts and run deploy.sh
         env:
-          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
-        run: |
-          mkdir -p ~/.ssh
-          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
-          chmod 644 ~/.ssh/known_hosts
-
-      - name: Rsync artifacts to staging dir
-        env:
-          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
-          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-          DEPLOY_SSH_PORT: ${{ secrets.DEPLOY_SSH_PORT }}
           SHA: ${{ needs.resolve-sha.outputs.sha }}
         run: |
-          STAGING="\$HOME/hybrid-cloud/staging/${SHA:0:12}"
-          ssh -p "${DEPLOY_SSH_PORT}" "${DEPLOY_USER}@${DEPLOY_HOST}" \
-            "rm -rf $STAGING && mkdir -p $STAGING"
-          rsync -avz --chmod=u+rwx,go-w \
-            -e "ssh -p ${DEPLOY_SSH_PORT}" \
-            dist/main-api dist/ssh-proxy dist/compute-agent dist/frontend.tar.gz \
-            "${DEPLOY_USER}@${DEPLOY_HOST}:$STAGING/"
+          STAGING="$HOME/hybrid-cloud/staging/${SHA:0:12}"
+          rm -rf "$STAGING"
+          mkdir -p "$STAGING"
+          cp dist/main-api dist/ssh-proxy dist/compute-agent dist/frontend.tar.gz "$STAGING/"
+          chmod u+rwx "$STAGING"/main-api "$STAGING"/ssh-proxy "$STAGING"/compute-agent
 
-      - name: Run deploy.sh on h20a
-        env:
-          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
-          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-          DEPLOY_SSH_PORT: ${{ secrets.DEPLOY_SSH_PORT }}
-          SHA: ${{ needs.resolve-sha.outputs.sha }}
-        run: |
-          # The script is in the deploy_root checkout on h20a; CI does not
-          # ship deploy.sh itself — operator updates it manually via PR + git
-          # pull on the host, since changing deploy logic mid-flight is a
-          # foot-gun.
-          STAGING="\$HOME/hybrid-cloud/staging/${SHA:0:12}"
-          ssh -p "${DEPLOY_SSH_PORT}" "${DEPLOY_USER}@${DEPLOY_HOST}" \
-            "bash \$HOME/hybrid-cloud/scripts/deploy.sh $STAGING $SHA"
+          # deploy.sh lives in the host checkout (~/hybrid-cloud/scripts/),
+          # not in the runner workspace — keeps the deploy logic stable
+          # across in-flight workflow edits.
+          bash "$HOME/hybrid-cloud/scripts/deploy.sh" "$STAGING" "$SHA"
 
-      - name: External smoke check (qlaud.net)
-        env:
-          PUBLIC_URL: ${{ secrets.DEPLOY_PUBLIC_URL }}
+      - name: Local smoke check
         run: |
-          # Public-facing checks: dashboard /login renders, API rejects
-          # unauthenticated requests with 401 (proves middleware is active).
-          curl -fsS -o /dev/null "$PUBLIC_URL/login"
-          code=$(curl -s -o /dev/null -w '%{http_code}' "$PUBLIC_URL/api/v1/instances")
+          # Already validated by deploy.sh's per-service smoke; this is a
+          # double-check from outside the deploy script proper, hitting the
+          # same loopback endpoints the script does. External smoke from a
+          # foreign IP is blocked (geo-fence), so we don't attempt it.
+          source "$HOME/hybrid-cloud/.env.production"
+          HTTP_PORT="${MAIN_API_HTTP_ADDR##*:}"
+          curl -fsS -o /dev/null "http://127.0.0.1:${HTTP_PORT}/metrics"
+          code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${HTTP_PORT}/api/v1/instances")
           [[ "$code" == "401" ]] || { echo "::error::expected 401, got $code"; exit 1; }
-          echo "external smoke OK"
+          echo "smoke OK"
