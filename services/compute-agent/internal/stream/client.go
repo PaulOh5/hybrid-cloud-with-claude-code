@@ -92,7 +92,11 @@ func New(cfg Config) (*Client, error) {
 }
 
 // Run blocks until ctx is done. Each iteration dials, registers, and pumps
-// heartbeats; on any error it waits with backoff and retries.
+// heartbeats; on any error it waits with backoff and retries. A clean
+// server-side EOF (runOnce returns nil with ctx still alive) is treated
+// the same as any other session end: short backoff, then reconnect.
+// Without this an EOF would either terminate the agent or thunder-herd
+// reconnect immediately.
 func (c *Client) Run(ctx context.Context) error {
 	backoff := c.cfg.InitialBackoff
 
@@ -102,7 +106,7 @@ func (c *Client) Run(ctx context.Context) error {
 		}
 
 		err := c.runOnce(ctx)
-		if err == nil || errors.Is(err, context.Canceled) {
+		if errors.Is(err, context.Canceled) || ctx.Err() != nil {
 			return ctx.Err()
 		}
 
@@ -182,12 +186,20 @@ func (c *Client) runOnce(ctx context.Context) error {
 	}
 
 	errCh := make(chan error, 3)
-	go func() { errCh <- c.sendLoop(sessionCtx, stream, outCh) }()
+	sendDone := make(chan struct{})
+	go func() {
+		defer close(sendDone)
+		errCh <- c.sendLoop(sessionCtx, stream, outCh)
+	}()
 	go func() { errCh <- c.heartbeatTicker(sessionCtx, ra.NodeId, interval, sendFn) }()
 	go func() { errCh <- c.readControl(sessionCtx, stream, sendFn) }()
 
 	err = <-errCh
 	cancelSession()
+	// sendLoop owns stream.Send; we must wait for it to exit before
+	// calling CloseSend. gRPC client streams are not safe for concurrent
+	// Send / CloseSend.
+	<-sendDone
 	_ = stream.CloseSend()
 	return err
 }

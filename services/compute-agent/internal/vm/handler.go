@@ -5,6 +5,7 @@ package vm
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -52,7 +53,19 @@ type Handler struct {
 	resizeFn func(ctx context.Context, dst string, sizeGB int) error
 
 	mu       sync.Mutex
-	inFlight map[string]struct{}
+	inFlight map[string]*opSlot
+
+	// wg tracks in-flight handle goroutines so a graceful shutdown can wait
+	// for them to finish (qemu-img, libvirt destroy, file cleanup) before
+	// the process exits. Wait reads from it.
+	wg sync.WaitGroup
+
+	// shutdownOnce + shutdown signal long-running side tasks (e.g. the
+	// 90-second IP detection poller) to exit early when Wait is called
+	// during a graceful shutdown. Destructive ops still run to completion
+	// because they use a no-cancel work ctx.
+	shutdownOnce sync.Once
+	shutdown     chan struct{}
 }
 
 // New returns a Handler wired to the given libvirt manager and host paths.
@@ -67,7 +80,8 @@ func New(mgr libvirt.Manager, cfg Config, log *slog.Logger) *Handler {
 		log:      log,
 		imgFn:    qemuImgCreate,
 		resizeFn: qemuImgResize,
-		inFlight: make(map[string]struct{}),
+		inFlight: make(map[string]*opSlot),
+		shutdown: make(chan struct{}),
 	}
 }
 
@@ -78,15 +92,49 @@ func (h *Handler) OnControl(
 	msg *agentv1.ControlMessage,
 	send func(*agentv1.AgentMessage),
 ) {
+	// Decouple the work ctx from the stream ctx so a SIGTERM mid-VM-op
+	// (qemu-img create, libvirt destroy, sysfs reset) does not abort the
+	// op and leak resources. Shutdown grace is owned by main(), which
+	// calls Wait after stream.Run returns.
+	workCtx := context.WithoutCancel(ctx)
+
 	switch p := msg.Payload.(type) {
 	case *agentv1.ControlMessage_CreateInstance:
-		go h.handleCreate(ctx, p.CreateInstance, send)
+		h.wg.Add(1)
+		go func() {
+			defer h.wg.Done()
+			h.handleCreate(workCtx, p.CreateInstance, send)
+		}()
 	case *agentv1.ControlMessage_DestroyInstance:
-		go h.handleDestroy(ctx, p.DestroyInstance, send)
+		h.wg.Add(1)
+		go func() {
+			defer h.wg.Done()
+			h.handleDestroy(workCtx, p.DestroyInstance, send)
+		}()
 	case *agentv1.ControlMessage_Ping, *agentv1.ControlMessage_RegisterAck:
 		// nothing to do
 	default:
 		h.log.Warn("unhandled control message", "type", fmt.Sprintf("%T", p))
+	}
+}
+
+// Wait blocks until all in-flight VM handlers complete or grace elapses.
+// Returns true on clean drain, false if grace expired with handlers still
+// running. Call after the stream has shut down so no new handlers race in.
+// Also signals long-running side tasks (e.g. detectAndPublishIP) to exit
+// early so they do not hold the wg until their natural deadline.
+func (h *Handler) Wait(grace time.Duration) bool {
+	h.shutdownOnce.Do(func() { close(h.shutdown) })
+	done := make(chan struct{})
+	go func() {
+		h.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return true
+	case <-time.After(grace):
+		return false
 	}
 }
 
@@ -96,10 +144,12 @@ func (h *Handler) handleCreate(
 	send func(*agentv1.AgentMessage),
 ) {
 	id := req.InstanceId
-	if !h.acquire(id) {
+	opCtx, slot, ok := h.acquireOp(ctx, id, opCreate)
+	if !ok {
 		h.log.Warn("duplicate create dropped", "instance_id", id)
 		return
 	}
+	ctx = opCtx
 	// Track whether we've released yet so error paths still cover the slot.
 	// On the success path we release explicitly *before* sending RUNNING so
 	// a destroy that arrives the moment a caller observes RUNNING can take
@@ -108,7 +158,7 @@ func (h *Handler) handleCreate(
 	releaseOnce := func() {
 		if !released {
 			released = true
-			h.release(id)
+			h.release(id, slot)
 		}
 	}
 	defer releaseOnce()
@@ -132,7 +182,8 @@ func (h *Handler) handleCreate(
 	diskPath, seedPath, err := h.prepareFiles(ctx, req)
 	if err != nil {
 		h.log.Error("prepare files", "instance_id", id, "err", err)
-		sendStatus(agentv1.InstanceState_INSTANCE_STATE_FAILED, statusOpts{Err: err.Error()})
+		h.cleanupFiles(id)
+		sendStatus(agentv1.InstanceState_INSTANCE_STATE_FAILED, statusOpts{Err: "prepare: " + err.Error()})
 		return
 	}
 
@@ -151,7 +202,22 @@ func (h *Handler) handleCreate(
 	info, err := h.mgr.CreateDomain(ctx, spec)
 	if err != nil {
 		h.log.Error("libvirt create", "instance_id", id, "err", err)
-		sendStatus(agentv1.InstanceState_INSTANCE_STATE_FAILED, statusOpts{Err: err.Error()})
+		// Best-effort cleanup so a CreateDomain failure (e.g. domain
+		// definition started but boot failed) does not leak qcow2/seed
+		// files or leave the requested passthrough GPUs in a half-bound
+		// state. Phase 1 A6 gate requires the next tenant to receive a
+		// clean GPU; reset every PCI device libvirt may have touched.
+		h.cleanupFiles(id)
+		for _, pci := range req.PassthroughPciAddresses {
+			if !h.sysfs.HasResetFile(pci) {
+				continue
+			}
+			if rerr := h.sysfs.ResetDevice(pci); rerr != nil {
+				h.log.Warn("gpu reset on create-failure",
+					"instance_id", id, "pci", pci, "err", rerr)
+			}
+		}
+		sendStatus(agentv1.InstanceState_INSTANCE_STATE_FAILED, statusOpts{Err: "libvirt-create: " + err.Error()})
 		return
 	}
 
@@ -183,10 +249,20 @@ func (h *Handler) detectAndPublishIP(ctx context.Context, id string, sendStatus 
 		select {
 		case <-ctx.Done():
 			return
+		case <-h.shutdown:
+			return
 		case <-time.After(3 * time.Second):
 		}
 		ip, err := h.mgr.DomainIPv4(ctx, id)
 		if err != nil {
+			// A destroy that lands while we're still polling tears down
+			// the libvirt domain. Treat ErrDomainNotFound as the normal
+			// exit signal so we don't keep emitting "vm ip lookup"
+			// warnings — and don't accidentally emit a stale RUNNING+IP
+			// after the instance has already moved to STOPPED.
+			if errors.Is(err, libvirt.ErrDomainNotFound) {
+				return
+			}
 			h.log.Warn("vm ip lookup", "instance_id", id, "err", err)
 			return
 		}
@@ -206,11 +282,13 @@ func (h *Handler) handleDestroy(
 	send func(*agentv1.AgentMessage),
 ) {
 	id := req.InstanceId
-	if !h.acquire(id) {
+	opCtx, slot, ok := h.acquireOp(ctx, id, opDestroy)
+	if !ok {
 		h.log.Warn("duplicate destroy dropped", "instance_id", id)
 		return
 	}
-	defer h.release(id)
+	defer h.release(id, slot)
+	ctx = opCtx
 
 	send(&agentv1.AgentMessage{
 		Payload: &agentv1.AgentMessage_InstanceStatus{
@@ -223,18 +301,22 @@ func (h *Handler) handleDestroy(
 	})
 
 	// Capture the hostdev PCI list *before* destroy so we can reset each
-	// device afterwards; post-destroy the domain is gone.
+	// device afterwards; post-destroy the domain is gone. A NotFound here
+	// just means the libvirt definition is already absent (e.g. previous
+	// destroy partial-failed or the agent restarted) — proceed with the
+	// cleanup paths anyway, leaving pcis empty.
 	pcis, err := h.mgr.DomainPassthroughPCI(ctx, id)
-	if err != nil {
+	if err != nil && !errors.Is(err, libvirt.ErrDomainNotFound) {
 		h.log.Warn("read passthrough pci list", "instance_id", id, "err", err)
 	}
 
 	// libvirt domain name == instance_id (set in handleCreate) so lookup on
-	// destroy uses the same key without needing a local map.
-	if err := h.mgr.DestroyDomain(ctx, id); err != nil {
+	// destroy uses the same key without needing a local map. NotFound is
+	// the success path for a redelivered DestroyInstance: the cleanup +
+	// reset code below still runs and we report STOPPED instead of
+	// FAILED, so main-api's slot release happens normally.
+	if err := h.mgr.DestroyDomain(ctx, id); err != nil && !errors.Is(err, libvirt.ErrDomainNotFound) {
 		h.log.Error("destroy failed", "instance_id", id, "err", err)
-		// Still report stopped after a best-effort cleanup — the row is gone
-		// from our perspective.
 		send(&agentv1.AgentMessage{
 			Payload: &agentv1.AgentMessage_InstanceStatus{
 				InstanceStatus: &agentv1.InstanceStatus{
@@ -288,10 +370,14 @@ func (h *Handler) prepareFiles(
 	ctx context.Context,
 	req *agentv1.CreateInstance,
 ) (diskPath string, seedPath string, err error) {
-	if err := os.MkdirAll(h.cfg.ImageDir, 0o750); err != nil {
+	// 0o700 on the dir + 0o600 on each file: the seed ISO contains the
+	// user's SSH public keys and the qcow2 disk inherits anything from the
+	// base image. Anyone else on this host (other tenants' qemu uid, root
+	// of a co-tenant container) must not be able to read either.
+	if err := os.MkdirAll(h.cfg.ImageDir, 0o700); err != nil {
 		return "", "", fmt.Errorf("mkdir image dir: %w", err)
 	}
-	if err := os.MkdirAll(h.cfg.SeedDir, 0o750); err != nil {
+	if err := os.MkdirAll(h.cfg.SeedDir, 0o700); err != nil {
 		return "", "", fmt.Errorf("mkdir seed dir: %w", err)
 	}
 
@@ -302,6 +388,11 @@ func (h *Handler) prepareFiles(
 		if err := h.imgFn(ctx, h.cfg.BaseImage, diskPath); err != nil {
 			return "", "", fmt.Errorf("create disk: %w", err)
 		}
+		// qemu-img writes 0o644 by default; tighten to 0o600 so the
+		// per-VM disk image is unreadable to other host users.
+		if err := os.Chmod(diskPath, 0o600); err != nil {
+			return "", "", fmt.Errorf("chmod disk: %w", err)
+		}
 		if h.cfg.DiskSizeGB > 0 {
 			if err := h.resizeFn(ctx, diskPath, h.cfg.DiskSizeGB); err != nil {
 				return "", "", fmt.Errorf("resize disk: %w", err)
@@ -309,7 +400,7 @@ func (h *Handler) prepareFiles(
 		}
 	}
 
-	f, err := os.Create(seedPath) //nolint:gosec // path joined with controlled dir above
+	f, err := os.OpenFile(seedPath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o600) //nolint:gosec // path joined with controlled dir above
 	if err != nil {
 		return "", "", fmt.Errorf("create seed: %w", err)
 	}
@@ -343,28 +434,87 @@ func (h *Handler) networkName() string {
 	return "default"
 }
 
-func (h *Handler) acquire(id string) bool {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if _, ok := h.inFlight[id]; ok {
-		return false
-	}
-	h.inFlight[id] = struct{}{}
-	return true
+// opKind classifies what an in-flight slot is currently doing.
+type opKind int
+
+const (
+	opCreate opKind = iota + 1
+	opDestroy
+)
+
+// opSlot pins one VM lifecycle operation. cancel terminates the work ctx
+// when a higher-priority op (today: destroy preempts create) takes over.
+// done closes when the holder releases the slot, so a preempting op can
+// wait until the previous goroutine has actually exited before claiming.
+type opSlot struct {
+	kind   opKind
+	cancel context.CancelFunc
+	done   chan struct{}
 }
 
-func (h *Handler) release(id string) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	delete(h.inFlight, id)
+// acquireOp registers an op for instance id. Returns (slot, true) when
+// the caller owns the slot and should proceed; (nil, false) when the
+// request must be dropped (duplicate of the same op already in flight).
+//
+// Preemption rules:
+//   - Same op already in flight → drop the duplicate (return false).
+//   - opCreate in flight, opDestroy arrives → cancel the create, wait for
+//     it to exit, then claim opDestroy. Without this a destroy that lands
+//     during a slow provisioning is silently lost and the VM keeps booting.
+//   - opDestroy in flight, opCreate arrives → drop the create (main-api
+//     should not be issuing this; if it does, it's a logic bug we want
+//     loud not silent — surface via the dropped warn log in the caller).
+func (h *Handler) acquireOp(parent context.Context, id string, kind opKind) (context.Context, *opSlot, bool) {
+	for {
+		h.mu.Lock()
+		existing, busy := h.inFlight[id]
+		if !busy {
+			ctx, cancel := context.WithCancel(parent)
+			slot := &opSlot{kind: kind, cancel: cancel, done: make(chan struct{})}
+			h.inFlight[id] = slot
+			h.mu.Unlock()
+			return ctx, slot, true
+		}
+		// Drop the request unless this is the one allowed preemption:
+		// a fresh destroy taking over an in-flight create. Same-op
+		// duplicates and any other combo are silently dropped.
+		if existing.kind == kind || kind != opDestroy || existing.kind != opCreate {
+			h.mu.Unlock()
+			return nil, nil, false
+		}
+		// destroy preempting create: cancel and wait outside the lock so
+		// the create goroutine can take h.mu in release().
+		preempted := existing
+		h.mu.Unlock()
+		preempted.cancel()
+		<-preempted.done
+		// Loop to re-check; another op may have raced in.
+	}
 }
+
+func (h *Handler) release(id string, slot *opSlot) {
+	h.mu.Lock()
+	if cur, ok := h.inFlight[id]; ok && cur == slot {
+		delete(h.inFlight, id)
+	}
+	h.mu.Unlock()
+	close(slot.done)
+}
+
+// qemuImgTimeout bounds each qemu-img invocation independently of the
+// caller ctx. NFS-backed base images and corrupt qcow2 chains have been
+// observed to wedge qemu-img indefinitely; without this an OnControl
+// goroutine could be parked forever.
+const qemuImgTimeout = 60 * time.Second
 
 // qemuImgCreate is the production disk creator. Tests inject a no-op instead
 // so they do not require qemu-img on the host.
 func qemuImgCreate(ctx context.Context, backing, dst string) error {
+	cmdCtx, cancel := context.WithTimeout(ctx, qemuImgTimeout)
+	defer cancel()
 	// qemu-img create -f qcow2 -F qcow2 -b <backing> <dst>
 	//nolint:gosec // args are controlled (backing configured by operator, dst under ImageDir)
-	cmd := exec.CommandContext(ctx, "qemu-img", "create",
+	cmd := exec.CommandContext(cmdCtx, "qemu-img", "create",
 		"-f", "qcow2",
 		"-F", "qcow2",
 		"-b", backing,
@@ -380,8 +530,10 @@ func qemuImgCreate(ctx context.Context, backing, dst string) error {
 // qemuImgResize grows the virtual disk. cloud-init's growpart handles the
 // filesystem side on first boot.
 func qemuImgResize(ctx context.Context, dst string, sizeGB int) error {
+	cmdCtx, cancel := context.WithTimeout(ctx, qemuImgTimeout)
+	defer cancel()
 	//nolint:gosec // dst is agent-controlled, sizeGB is an int
-	cmd := exec.CommandContext(ctx, "qemu-img", "resize", dst, fmt.Sprintf("%dG", sizeGB))
+	cmd := exec.CommandContext(cmdCtx, "qemu-img", "resize", dst, fmt.Sprintf("%dG", sizeGB))
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("qemu-img resize: %w: %s", err, string(out))

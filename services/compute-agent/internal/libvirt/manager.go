@@ -58,7 +58,10 @@ func NewFromConnector(c Connector, log *slog.Logger) *LibvirtManager {
 // CreateDomain defines the domain XML, starts it, and returns info. If a
 // domain with the same name already exists we return ErrDomainExists so the
 // caller can decide whether to treat it as success (idempotent re-create).
-func (m *LibvirtManager) CreateDomain(_ context.Context, spec DomainSpec) (DomainInfo, error) {
+func (m *LibvirtManager) CreateDomain(ctx context.Context, spec DomainSpec) (DomainInfo, error) {
+	if err := ctx.Err(); err != nil {
+		return DomainInfo{}, err
+	}
 	xmlBytes, err := BuildDomainXML(spec)
 	if err != nil {
 		return DomainInfo{}, err
@@ -94,7 +97,10 @@ func (m *LibvirtManager) CreateDomain(_ context.Context, spec DomainSpec) (Domai
 // DestroyDomain powers off the VM and removes its libvirt definition.
 // Missing domains return ErrDomainNotFound so the caller can treat double-
 // destroy as success.
-func (m *LibvirtManager) DestroyDomain(_ context.Context, name string) error {
+func (m *LibvirtManager) DestroyDomain(ctx context.Context, name string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	dom, err := m.conn.DomainLookupByName(name)
 	if err != nil {
 		return fmt.Errorf("%w: %s", ErrDomainNotFound, name)
@@ -112,7 +118,12 @@ func (m *LibvirtManager) DestroyDomain(_ context.Context, name string) error {
 }
 
 // DomainState translates the libvirt state enum into our narrow set.
-func (m *LibvirtManager) DomainState(_ context.Context, name string) (DomainState, error) {
+func (m *LibvirtManager) DomainState(ctx context.Context, name string) (DomainState, error) {
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return StateUnknown, err
+		}
+	}
 	dom, err := m.conn.DomainLookupByName(name)
 	if err != nil {
 		return StateUnknown, fmt.Errorf("%w: %s", ErrDomainNotFound, name)
@@ -127,7 +138,10 @@ func (m *LibvirtManager) DomainState(_ context.Context, name string) (DomainStat
 // DomainPassthroughPCI parses the domain's live XML and returns the PCI
 // addresses of every <hostdev> attached. Called before DestroyDomain so the
 // agent can reset each device after libvirt releases it.
-func (m *LibvirtManager) DomainPassthroughPCI(_ context.Context, name string) ([]string, error) {
+func (m *LibvirtManager) DomainPassthroughPCI(ctx context.Context, name string) ([]string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	dom, err := m.conn.DomainLookupByName(name)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %s", ErrDomainNotFound, name)
@@ -142,7 +156,10 @@ func (m *LibvirtManager) DomainPassthroughPCI(_ context.Context, name string) ([
 // DomainIPv4 reads the dnsmasq-lease IP for the domain's first virtio NIC.
 // Returns "" with nil error when no lease is yet known so the caller can
 // retry; only persistent failures bubble up as errors.
-func (m *LibvirtManager) DomainIPv4(_ context.Context, name string) (string, error) {
+func (m *LibvirtManager) DomainIPv4(ctx context.Context, name string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	dom, err := m.conn.DomainLookupByName(name)
 	if err != nil {
 		return "", fmt.Errorf("%w: %s", ErrDomainNotFound, name)

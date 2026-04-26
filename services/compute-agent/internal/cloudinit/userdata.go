@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/kdomanski/iso9660"
+	"gopkg.in/yaml.v3"
 )
 
 // Request is the input to BuildSeed.
@@ -98,17 +99,20 @@ func renderMetaData(r Request) string {
 	return b.String()
 }
 
-// yamlString double-quotes a value when it contains characters that would
-// otherwise require YAML block scalars or escaping (':', '#', whitespace
-// leading/trailing). Safe for all phase-3 inputs (UUIDs, hostnames, SSH keys).
+// yamlString returns a YAML-safe scalar encoding of s. Hand-rolled escape
+// (just `:`, `#`, `\n`, `\t`, leading/trailing space) misses backslashes,
+// non-ASCII characters, and control bytes — all of which can appear in SSH
+// pubkey comments or non-Latin hostnames and would corrupt the YAML
+// stream. Delegating to yaml.Marshal is one line and inherits the spec's
+// full escape table.
 func yamlString(s string) string {
-	needsQuote := strings.ContainsAny(s, ":#\n\t") ||
-		strings.HasPrefix(s, " ") ||
-		strings.HasSuffix(s, " ") ||
-		s == ""
-	if !needsQuote {
-		return s
+	out, err := yaml.Marshal(s)
+	if err != nil {
+		// yaml.Marshal of a string never fails in practice; fall back to
+		// a defensively-quoted form so we never inject raw input.
+		return `"` + strings.ReplaceAll(strings.ReplaceAll(s, `\`, `\\`), `"`, `\"`) + `"`
 	}
-	escaped := strings.ReplaceAll(s, `"`, `\"`)
-	return `"` + escaped + `"`
+	// yaml.Marshal appends a trailing newline ("foo\n"); strip it so the
+	// caller can put yamlString output inline with its own formatting.
+	return strings.TrimRight(string(out), "\n")
 }
