@@ -37,9 +37,18 @@ func New(baseURL, token string) *Client {
 	}
 }
 
-// Issue requests a signed ticket for the given subdomain prefix.
-func (c *Client) Issue(ctx context.Context, prefix string) (Signed, error) {
-	body, _ := json.Marshal(map[string]string{"subdomain_prefix": prefix})
+// Issue requests a signed ticket for the given subdomain prefix. The
+// fingerprint is the SHA-256 hash of the SSH key the client offered to
+// ssh-proxy at handshake; main-api uses it to authenticate the user before
+// scoping the prefix lookup to that user's instances.
+func (c *Client) Issue(ctx context.Context, prefix, fingerprint string) (Signed, error) {
+	body, err := json.Marshal(map[string]string{
+		"subdomain_prefix":    prefix,
+		"ssh_key_fingerprint": fingerprint,
+	})
+	if err != nil {
+		return Signed{}, fmt.Errorf("encode request: %w", err)
+	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		c.BaseURL+"/internal/ssh-ticket", bytes.NewReader(body))
@@ -59,8 +68,11 @@ func (c *Client) Issue(ctx context.Context, prefix string) (Signed, error) {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 		return Signed{}, fmt.Errorf("ticket status %d: %s", resp.StatusCode, string(b))
 	}
+	// Cap the response so a misbehaving / compromised main-api cannot
+	// stream gigabytes of body and exhaust ssh-proxy memory. Real tickets
+	// are well under 4 KB.
 	var s Signed
-	if err := json.NewDecoder(resp.Body).Decode(&s); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<14)).Decode(&s); err != nil {
 		return Signed{}, fmt.Errorf("decode: %w", err)
 	}
 	return s, nil
