@@ -112,8 +112,9 @@ Set under **Settings → Secrets and variables → Actions**:
 | --- | --- |
 | `DEPLOY_HOST` | e.g. `h20a.qlaud.net` |
 | `DEPLOY_USER` | e.g. `hybrid` |
+| `DEPLOY_SSH_PORT` | e.g. `12831` (h20a does not listen on 22) |
 | `DEPLOY_SSH_KEY` | private key (ed25519) — public half goes in `~hybrid/.ssh/authorized_keys` on h20a |
-| `DEPLOY_KNOWN_HOSTS` | output of `ssh-keyscan -t ed25519 h20a.qlaud.net` (pin the host key) |
+| `DEPLOY_KNOWN_HOSTS` | output of `ssh-keyscan -p 12831 -t ed25519 h20a.qlaud.net` (pin the host key — the bracketed `[host]:port` format must match the port used at connect time) |
 | `DEPLOY_PUBLIC_URL` | e.g. `https://qlaud.net` |
 
 The deploy key should be dedicated to CD (not your personal key). Consider
