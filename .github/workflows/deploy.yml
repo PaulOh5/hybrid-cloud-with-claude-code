@@ -63,15 +63,18 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SHA: ${{ needs.resolve-sha.outputs.sha }}
+        # No checkout in this job, so gh CLI can't infer the repo from a git
+        # remote — pass it explicitly via $GITHUB_REPOSITORY.
         run: |
           status=$(gh run list --workflow=ci.yml --commit "$SHA" \
+            --repo "$GITHUB_REPOSITORY" \
             --json status,conclusion --limit 1 \
             | jq -r '.[0] | "\(.status):\(.conclusion)"')
           echo "CI status for $SHA: $status"
           case "$status" in
-            completed:success) echo "CI green — proceeding" ;;
-            null:*|:* )        echo "::error::no CI run found for $SHA"; exit 1 ;;
-            *)                 echo "::error::CI not green: $status"; exit 1 ;;
+            completed:success)             echo "CI green — proceeding" ;;
+            null:null|:|null:*|:*|*:null)  echo "::error::no CI run found for $SHA"; exit 1 ;;
+            *)                             echo "::error::CI not green: $status"; exit 1 ;;
           esac
 
   build:
