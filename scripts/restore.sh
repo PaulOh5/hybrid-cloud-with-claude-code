@@ -38,24 +38,30 @@ if [[ ! -f "$ARCHIVE" ]]; then
   exit 2
 fi
 
+# Prefer host psql; fall back to the postgres docker container.
+PG_CONTAINER="${PG_CONTAINER:-hybrid-postgres}"
+if command -v psql >/dev/null 2>&1; then
+  psql_via=(psql)
+elif command -v docker >/dev/null 2>&1 \
+     && docker ps --format '{{.Names}}' | grep -qx "$PG_CONTAINER"; then
+  psql_via=(docker exec -i "$PG_CONTAINER" psql)
+else
+  echo "psql not on PATH and container '$PG_CONTAINER' not running" >&2
+  exit 4
+fi
+
 if [[ $DRY_RUN -eq 1 ]]; then
   echo "[dry-run] would restore $ARCHIVE → $DATABASE_URL"
+  echo "[dry-run] psql via: ${psql_via[*]}"
   echo "[dry-run] gunzip -t check…"
   gunzip -t "$ARCHIVE"
-  if ! command -v psql >/dev/null 2>&1; then
-    echo "[dry-run] WARNING: psql missing — install postgresql-client before running for real" >&2
-  fi
   echo "[dry-run] OK"
   exit 0
 fi
 
-if ! command -v psql >/dev/null 2>&1; then
-  echo "psql not installed; install postgresql-client (sudo apt-get install -y postgresql-client)" >&2
-  exit 4
-fi
-
 # Refuse to overwrite a non-empty schema unless --force is set.
-table_count=$(psql "$DATABASE_URL" -tAc "select count(*) from pg_tables where schemaname='public'")
+table_count=$("${psql_via[@]}" "$DATABASE_URL" -tAc "select count(*) from pg_tables where schemaname='public'")
+table_count="${table_count//[[:space:]]/}"
 if [[ "$table_count" -gt 0 && $FORCE -eq 0 ]]; then
   cat >&2 <<EOF
 target database has $table_count tables in 'public' — refusing to overwrite.
@@ -66,9 +72,9 @@ fi
 
 if [[ $FORCE -eq 1 && "$table_count" -gt 0 ]]; then
   echo "dropping public schema (force)…"
-  psql "$DATABASE_URL" -c "drop schema public cascade; create schema public;"
+  "${psql_via[@]}" "$DATABASE_URL" -c "drop schema public cascade; create schema public;"
 fi
 
-echo "restoring $ARCHIVE → $DATABASE_URL"
-gunzip -c "$ARCHIVE" | psql "$DATABASE_URL" --set ON_ERROR_STOP=1 >/dev/null
+echo "restoring $ARCHIVE → $DATABASE_URL (via ${psql_via[*]})"
+gunzip -c "$ARCHIVE" | "${psql_via[@]}" "$DATABASE_URL" --set ON_ERROR_STOP=1 >/dev/null
 echo "restore complete"
