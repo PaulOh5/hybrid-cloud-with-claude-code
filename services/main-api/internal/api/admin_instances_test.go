@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -110,6 +111,25 @@ func (f *fakeInstanceRepo) ListForOwner(_ context.Context, ownerID uuid.NullUUID
 			continue
 		}
 		out = append(out, *v)
+	}
+	return out, nil
+}
+
+func (f *fakeInstanceRepo) FindByOwnerAndIDPrefix(_ context.Context, ownerID uuid.UUID, prefix string) ([]dbstore.Instance, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []dbstore.Instance
+	for _, v := range f.rows {
+		if !v.OwnerID.Valid || v.OwnerID.UUID != ownerID {
+			continue
+		}
+		if !strings.HasPrefix(v.ID.String(), prefix) {
+			continue
+		}
+		out = append(out, *v)
+		if len(out) == 2 {
+			break
+		}
 	}
 	return out, nil
 }

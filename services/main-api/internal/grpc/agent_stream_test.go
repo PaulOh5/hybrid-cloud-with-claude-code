@@ -77,18 +77,25 @@ func (f *fakeRepo) UpdateTopology(_ context.Context, id uuid.UUID, raw []byte) e
 	return nil
 }
 
-func (f *fakeRepo) MarkStaleOffline(_ context.Context, before time.Time) (int64, error) {
+func (f *fakeRepo) MarkStaleOffline(_ context.Context, before time.Time) ([]uuid.UUID, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.sweeps = append(f.sweeps, before)
-	var n int64
+	var ids []uuid.UUID
 	for _, nd := range f.nodes {
 		if nd.Status != dbstore.NodeStatusOffline {
 			nd.Status = dbstore.NodeStatusOffline
-			n++
+			ids = append(ids, nd.ID)
 		}
 	}
-	return n, nil
+	return ids, nil
+}
+
+func (f *fakeRepo) NonTerminalInstancesForNode(_ context.Context, _ uuid.UUID) ([]node.NodeInstance, error) {
+	// No instance-tracking in this fake; the existing tests exercise the
+	// node-level path. The new reaper path has its own targeted test that
+	// uses a richer fake.
+	return nil, nil
 }
 
 func (f *fakeRepo) List(_ context.Context) ([]dbstore.Node, error) {

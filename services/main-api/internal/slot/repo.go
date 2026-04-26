@@ -166,6 +166,16 @@ func (r *Repo) ReleaseForInstance(ctx context.Context, instanceID uuid.UUID) (in
 	return r.queries.ReleaseSlotsForInstance(ctx, uuid.NullUUID{UUID: instanceID, Valid: true})
 }
 
+// RecoverOrphanReservations frees any slot still in 'reserved' state with no
+// current_instance_id at startup. Reservations only live for the duration of
+// a single Reserve→Bind window owned by the live main-api process; if we
+// see one on boot, the process that created it crashed mid-flight. Called
+// once at startup before serving traffic so capacity is not silently lost
+// across restarts.
+func (r *Repo) RecoverOrphanReservations(ctx context.Context) (int64, error) {
+	return r.queries.ReleaseAllOrphanReservedSlots(ctx)
+}
+
 // SyncResult is what SyncFromProfile tells the caller — did we replace the
 // slots, do nothing, or refuse because slots are in use.
 type SyncResult int

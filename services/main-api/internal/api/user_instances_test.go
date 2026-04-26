@@ -285,13 +285,15 @@ func TestUserInstances_CreateStampsOwnerID(t *testing.T) {
 	}
 }
 
-// Admin should still be able to access cross-user instances (sanity).
-func TestUserInstances_AdminCanReadOthers(t *testing.T) {
+// User-facing routes do NOT grant admins access to other users' instances
+// — admin operator workflows belong to /api/v1/admin/instances. The 404
+// response is deliberate: an admin who lands on the user route should not
+// see a different action's audit signal than a regular user would.
+func TestUserInstances_AdminGetsNotFoundOnOthers(t *testing.T) {
 	t.Parallel()
 	rig := setupUserRig(t)
 	bobInst := seedInstance(t, rig, rig.bobID, "bob-vm")
 
-	// Promote alice to admin in-place.
 	stored := rig.store.users["alice@example.com"]
 	stored.IsAdmin = true
 	rig.store.users["alice@example.com"] = stored
@@ -299,8 +301,9 @@ func TestUserInstances_AdminCanReadOthers(t *testing.T) {
 
 	cookie := loginAs(t, rig, "alice@example.com", "longenough01")
 	rr := sendWithCookie(t, rig.router, http.MethodGet, "/api/v1/instances/"+bobInst.ID.String(), nil, cookie)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("admin should see other instances, got %d body=%s", rr.Code, rr.Body.String())
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("admin on user route should get 404 on other-owner instance, got %d body=%s",
+			rr.Code, rr.Body.String())
 	}
 }
 

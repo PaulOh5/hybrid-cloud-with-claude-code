@@ -265,7 +265,11 @@ func (s *AgentStreamService) applyInstanceStatus(ctx context.Context, st *agentv
 }
 
 // StaleSweeper runs MarkStaleOffline on an interval. It exits when ctx is
-// cancelled. Safe to launch as a goroutine during server startup.
+// cancelled. Safe to launch as a goroutine during server startup. For each
+// node that just transitioned offline, every non-terminal instance pinned
+// to that node is failed and its slots released — otherwise main-api's
+// view of the world stays "instance running" forever after an agent loss
+// and capacity leaks until an admin manually deletes the stale rows.
 func (s *AgentStreamService) StaleSweeper(ctx context.Context, interval, ttl time.Duration) error {
 	t := time.NewTicker(interval)
 	defer t.Stop()
@@ -275,13 +279,46 @@ func (s *AgentStreamService) StaleSweeper(ctx context.Context, interval, ttl tim
 			return ctx.Err()
 		case <-t.C:
 			cutoff := s.clock().Add(-ttl)
-			affected, err := s.Nodes.MarkStaleOffline(ctx, cutoff)
+			ids, err := s.Nodes.MarkStaleOffline(ctx, cutoff)
 			if err != nil {
 				s.log().Error("stale sweep failed", "err", err)
 				continue
 			}
-			if affected > 0 {
-				s.log().Info("marked nodes offline", "count", affected, "cutoff", cutoff)
+			if len(ids) == 0 {
+				continue
+			}
+			s.log().Info("marked nodes offline", "count", len(ids), "cutoff", cutoff)
+			for _, nodeID := range ids {
+				s.reapInstancesForOfflineNode(ctx, nodeID)
+			}
+		}
+	}
+}
+
+// reapInstancesForOfflineNode flips every pending/provisioning/running
+// instance on nodeID to failed and releases its slots. Best-effort: a per-
+// instance error is logged but does not abort the sweep so other instances
+// (and other nodes) still get reaped.
+func (s *AgentStreamService) reapInstancesForOfflineNode(ctx context.Context, nodeID uuid.UUID) {
+	rows, err := s.Nodes.NonTerminalInstancesForNode(ctx, nodeID)
+	if err != nil {
+		s.log().Error("list non-terminal instances", "node_id", nodeID, "err", err)
+		return
+	}
+	for _, row := range rows {
+		_, err := s.Instances.Transition(ctx, row.ID, instance.StateFailed, instance.TransitionOptions{
+			Reason:       "node_offline",
+			ErrorMessage: "agent heartbeat timed out; node marked offline",
+		})
+		if err != nil && !errors.Is(err, instance.ErrInvalidTransition) {
+			s.log().Warn("reap instance transition failed",
+				"instance_id", row.ID, "from", row.State, "err", err)
+			continue
+		}
+		if s.Slots != nil {
+			if _, relErr := s.Slots.ReleaseForInstance(ctx, row.ID); relErr != nil {
+				s.log().Warn("reap slot release failed",
+					"instance_id", row.ID, "err", relErr)
 			}
 		}
 	}

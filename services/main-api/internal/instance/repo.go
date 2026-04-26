@@ -173,6 +173,18 @@ func (r *Repo) ListForOwner(ctx context.Context, ownerID uuid.NullUUID) ([]dbsto
 	return r.queries.ListInstances(ctx, ownerID)
 }
 
+// FindByOwnerAndIDPrefix resolves the short subdomain form (`{prefix}.zone`)
+// scoped to a single owner. Phase 6 ssh-proxy + Phase 9 audit both route by
+// owner so a fingerprint mismatch never leaks instance existence.
+func (r *Repo) FindByOwnerAndIDPrefix(
+	ctx context.Context, ownerID uuid.UUID, prefix string,
+) ([]dbstore.Instance, error) {
+	return r.queries.ListInstancesByOwnerAndIDPrefix(ctx, dbstore.ListInstancesByOwnerAndIDPrefixParams{
+		OwnerID: uuid.NullUUID{UUID: ownerID, Valid: true},
+		Column2: pgtype.Text{String: prefix, Valid: true},
+	})
+}
+
 // --- internals -------------------------------------------------------------
 
 func (r *Repo) inTx(ctx context.Context, fn func(q *dbstore.Queries) error) error {

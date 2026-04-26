@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,6 +23,17 @@ type SSHTicketDeps struct {
 	Nodes     NodeGetter
 	Registry  TunnelRegistry
 	Signer    *sshticket.Signer
+	// SSHKeys resolves the client's SHA-256 SSH key fingerprint (presented to
+	// ssh-proxy at handshake) to the owning user. Required for owner
+	// scoping; nil leaves the gate disabled, which production boot must
+	// reject.
+	SSHKeys SSHKeyAuth
+}
+
+// SSHKeyAuth is the subset of sshkeys.Repo used to authenticate ssh-proxy
+// requests. Returns sshkeys.ErrNotFound when the fingerprint is unknown.
+type SSHKeyAuth interface {
+	LookupUserByFingerprint(ctx context.Context, fingerprint string) (uuid.UUID, error)
 }
 
 // TunnelRegistry exposes the tunnel endpoint the agent advertised at Register.
@@ -30,7 +42,54 @@ type TunnelRegistry interface {
 }
 
 type sshTicketRequest struct {
-	SubdomainPrefix string `json:"subdomain_prefix"`
+	SubdomainPrefix   string `json:"subdomain_prefix"`
+	SSHKeyFingerprint string `json:"ssh_key_fingerprint"`
+}
+
+// prefix must be the leading hex segment of an instance UUID. We accept 8-32
+// hex chars; below 8 the collision space gets uncomfortable and we'd rather
+// fail loudly than route a stray client to the wrong VM.
+const (
+	minSubdomainPrefixLen = 8
+	maxSubdomainPrefixLen = 32
+)
+
+func isHexLower(s string) bool {
+	for _, c := range s {
+		switch {
+		case c >= '0' && c <= '9':
+		case c >= 'a' && c <= 'f':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// parseSSHTicketRequest reads and validates the request body. Returns a
+// non-zero (status, code, msg) on validation failure so the caller writes
+// the error and returns.
+func parseSSHTicketRequest(r *http.Request) (req sshTicketRequest, status int, code, msg string) {
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<10))
+	if err != nil {
+		return req, http.StatusBadRequest, "read_body", err.Error()
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		return req, http.StatusBadRequest, "bad_json", err.Error()
+	}
+	req.SubdomainPrefix = strings.ToLower(strings.TrimSpace(req.SubdomainPrefix))
+	if req.SubdomainPrefix == "" {
+		return req, http.StatusBadRequest, "missing_prefix", "subdomain_prefix required"
+	}
+	if n := len(req.SubdomainPrefix); n < minSubdomainPrefixLen || n > maxSubdomainPrefixLen || !isHexLower(req.SubdomainPrefix) {
+		return req, http.StatusBadRequest, "bad_prefix",
+			"subdomain_prefix must be 8-32 lowercase hex chars"
+	}
+	req.SSHKeyFingerprint = strings.TrimSpace(req.SSHKeyFingerprint)
+	if req.SSHKeyFingerprint == "" {
+		return req, http.StatusBadRequest, "missing_fingerprint", "ssh_key_fingerprint required"
+	}
+	return req, 0, "", ""
 }
 
 // SSHTicketHandler builds the http.HandlerFunc. Wrapped separately so the
@@ -38,23 +97,25 @@ type sshTicketRequest struct {
 func SSHTicketHandler(deps SSHTicketDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		defer func() { _ = r.Body.Close() }()
-		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<10))
+		req, status, code, msg := parseSSHTicketRequest(r)
+		if status != 0 {
+			writeError(w, status, code, msg)
+			return
+		}
+		if deps.SSHKeys == nil {
+			writeError(w, http.StatusServiceUnavailable, "ssh_auth_disabled",
+				"ssh-key authentication is not configured on this server")
+			return
+		}
+		ownerID, err := deps.SSHKeys.LookupUserByFingerprint(r.Context(), req.SSHKeyFingerprint)
 		if err != nil {
-			writeError(w, http.StatusBadRequest, "read_body", err.Error())
-			return
-		}
-		var req sshTicketRequest
-		if err := json.Unmarshal(body, &req); err != nil {
-			writeError(w, http.StatusBadRequest, "bad_json", err.Error())
-			return
-		}
-		req.SubdomainPrefix = strings.ToLower(strings.TrimSpace(req.SubdomainPrefix))
-		if req.SubdomainPrefix == "" {
-			writeError(w, http.StatusBadRequest, "missing_prefix", "subdomain_prefix required")
+			// Same 404 the unknown-prefix branch returns, so a probe can't
+			// distinguish "no such fingerprint" from "no such instance".
+			writeError(w, http.StatusNotFound, "instance_lookup", "instance not found")
 			return
 		}
 
-		inst, err := resolveInstanceByPrefix(r.Context(), deps.Instances, req.SubdomainPrefix)
+		inst, err := resolveInstanceByPrefix(r.Context(), deps.Instances, ownerID, req.SubdomainPrefix)
 		if err != nil {
 			code := http.StatusNotFound
 			if errors.Is(err, errAmbiguousPrefix) {
@@ -107,17 +168,15 @@ func SSHTicketHandler(deps SSHTicketDeps) http.HandlerFunc {
 
 var errAmbiguousPrefix = errors.New("multiple instances match the prefix")
 
-func resolveInstanceByPrefix(ctx context.Context, repo InstanceRepo, prefix string) (dbstore.Instance, error) {
-	// The caller guarantees prefix is already normalised to lowercase.
-	all, err := repo.ListForOwner(ctx, uuid.NullUUID{Valid: false})
+func resolveInstanceByPrefix(
+	ctx context.Context, repo InstanceRepo, ownerID uuid.UUID, prefix string,
+) (dbstore.Instance, error) {
+	// Owner scoping is mandatory — the SQL query filters by owner_id and
+	// matches `id::text LIKE prefix || '%'`, with LIMIT 2 so we can detect
+	// ambiguity without paying for the full set.
+	matches, err := repo.FindByOwnerAndIDPrefix(ctx, ownerID, prefix)
 	if err != nil {
-		return dbstore.Instance{}, fmt.Errorf("list instances: %w", err)
-	}
-	var matches []dbstore.Instance
-	for _, inst := range all {
-		if strings.HasPrefix(inst.ID.String(), prefix) {
-			matches = append(matches, inst)
-		}
+		return dbstore.Instance{}, fmt.Errorf("lookup instance by prefix: %w", err)
 	}
 	switch len(matches) {
 	case 0:
@@ -142,7 +201,7 @@ func RequireInternalToken(expected string) func(http.Handler) http.Handler {
 			}
 			h := r.Header.Get("Authorization")
 			token := strings.TrimPrefix(h, "Bearer ")
-			if token == h || token != expected {
+			if token == h || subtle.ConstantTimeCompare([]byte(token), []byte(expected)) != 1 {
 				writeError(w, http.StatusUnauthorized, "unauthenticated",
 					"invalid or missing internal bearer token")
 				return

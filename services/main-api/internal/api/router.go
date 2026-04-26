@@ -108,7 +108,11 @@ func NewUserRouter(h UserHandlers, resolver SessionResolver) http.Handler {
 		adminMux.HandleFunc("POST /api/v1/admin/users/{id}/credits", h.AdminCredits.Recharge)
 		adminMux.HandleFunc("GET /api/v1/admin/users/{id}/credits", h.AdminCredits.Balance)
 	}
-	adminHandler := RequireUser(RequireAdmin(adminMux))
+	// Admin routes return 404 to both unauthenticated probes and authenticated
+	// non-admins so URL enumeration cannot tell them apart. RequireAdmin
+	// already returns 404 for both cases — wrapping it in RequireUser would
+	// leak admin-route existence to unauthenticated probes via 401.
+	adminHandler := RequireAdmin(adminMux)
 
 	root := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Routes registered on `open` win first (login/register/logout);

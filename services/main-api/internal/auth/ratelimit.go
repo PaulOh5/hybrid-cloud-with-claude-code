@@ -15,11 +15,12 @@ const LoginRateWindow = time.Minute
 // it for the login path; if more endpoints become rate-limited later we can
 // reach for a real library.
 type RateLimiter struct {
-	mu     sync.Mutex
-	hits   map[string][]time.Time
-	limit  int
-	window time.Duration
-	now    func() time.Time
+	mu       sync.Mutex
+	hits     map[string][]time.Time
+	limit    int
+	window   time.Duration
+	now      func() time.Time
+	lastSwep time.Time
 }
 
 // NewRateLimiter returns a limiter with limit/window defaults.
@@ -48,10 +49,41 @@ func (r *RateLimiter) Allow(key string) bool {
 			fresh = append(fresh, t)
 		}
 	}
-	if len(fresh) >= r.limit {
-		r.hits[key] = fresh
-		return false
+	allowed := len(fresh) < r.limit
+	if allowed {
+		fresh = append(fresh, now)
 	}
-	r.hits[key] = append(fresh, now)
-	return true
+	if len(fresh) == 0 {
+		// Don't keep a zero-length slot; lets sweepLocked reclaim the key.
+		delete(r.hits, key)
+	} else {
+		r.hits[key] = fresh
+	}
+
+	// Periodically reclaim entries that have aged out entirely. Without
+	// this an attacker rotating source IPs (or X-Forwarded-For values)
+	// would grow the map unboundedly. Sweep at most once per window so
+	// the cost is amortised across many Allow calls.
+	if now.Sub(r.lastSwep) >= r.window {
+		r.sweepLocked(cutoff)
+		r.lastSwep = now
+	}
+	return allowed
+}
+
+// sweepLocked drops keys whose every recorded hit is older than cutoff. The
+// caller must hold r.mu.
+func (r *RateLimiter) sweepLocked(cutoff time.Time) {
+	for k, ts := range r.hits {
+		stale := true
+		for _, t := range ts {
+			if t.After(cutoff) {
+				stale = false
+				break
+			}
+		}
+		if stale {
+			delete(r.hits, k)
+		}
+	}
 }

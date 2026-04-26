@@ -18,6 +18,15 @@ select * from instances
 where (sqlc.narg('owner_id')::uuid is null or owner_id = sqlc.narg('owner_id'))
 order by created_at desc;
 
+-- name: ListInstancesByOwnerAndIDPrefix :many
+-- ssh-proxy → main-api ticket flow looks up an instance by its short-form
+-- subdomain prefix scoped to the authenticated owner. LIMIT 2 lets the caller
+-- detect ambiguity without paying for the full match set.
+select * from instances
+where owner_id = $1
+  and id::text like $2 || '%'
+limit 2;
+
 -- name: UpdateInstanceState :one
 update instances
 set state          = $2,

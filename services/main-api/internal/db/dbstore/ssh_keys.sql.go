@@ -117,3 +117,27 @@ func (q *Queries) ListSSHKeysForUser(ctx context.Context, userID uuid.UUID) ([]S
 	}
 	return items, nil
 }
+
+const lookupSSHKeyByFingerprint = `-- name: LookupSSHKeyByFingerprint :one
+select id, user_id, label, pubkey, fingerprint, created_at from ssh_keys
+where fingerprint = $1
+limit 1
+`
+
+// ssh-proxy authenticates a user by SSH key fingerprint. Returns the row so
+// the caller can scope subsequent lookups by owner_id without the fingerprint
+// being globally unique (we still trust the (user_id, fingerprint) unique
+// constraint per the schema).
+func (q *Queries) LookupSSHKeyByFingerprint(ctx context.Context, fingerprint string) (SshKey, error) {
+	row := q.db.QueryRow(ctx, lookupSSHKeyByFingerprint, fingerprint)
+	var i SshKey
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.Label,
+		&i.Pubkey,
+		&i.Fingerprint,
+		&i.CreatedAt,
+	)
+	return i, err
+}

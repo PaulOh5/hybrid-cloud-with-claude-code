@@ -69,6 +69,17 @@ set status              = 'free',
     current_instance_id = null
 where id = any(sqlc.arg('ids')::uuid[]) and status = 'reserved';
 
+-- name: ReleaseAllOrphanReservedSlots :execrows
+-- Startup-time sweeper. Reservations are transactional-ish state held by
+-- the live main-api process; on a fresh boot every slot still in 'reserved'
+-- without a current_instance_id is by definition orphaned (the process that
+-- reserved it died before binding). Frees them so capacity is not lost
+-- across restarts. Bound (in_use) slots are left untouched.
+update gpu_slots
+set status              = 'free',
+    current_instance_id = null
+where status = 'reserved' and current_instance_id is null;
+
 -- name: CountNonFreeSlotsForNode :one
 select count(*)::bigint from gpu_slots where node_id = $1 and status <> 'free';
 

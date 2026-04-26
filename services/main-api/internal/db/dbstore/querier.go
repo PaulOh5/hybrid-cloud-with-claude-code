@@ -45,7 +45,15 @@ type Querier interface {
 	ListCreditLedgerEntries(ctx context.Context, arg ListCreditLedgerEntriesParams) ([]CreditLedger, error)
 	ListInstanceEvents(ctx context.Context, instanceID uuid.UUID) ([]InstanceEvent, error)
 	ListInstances(ctx context.Context, ownerID uuid.NullUUID) ([]Instance, error)
+	// ssh-proxy → main-api ticket flow looks up an instance by its short-form
+	// subdomain prefix scoped to the authenticated owner. LIMIT 2 lets the caller
+	// detect ambiguity without paying for the full match set.
+	ListInstancesByOwnerAndIDPrefix(ctx context.Context, arg ListInstancesByOwnerAndIDPrefixParams) ([]Instance, error)
 	ListNodes(ctx context.Context) ([]Node, error)
+	// Counterpart to MarkStaleNodesOfflineReturning — every instance on a
+	// newly-offline node whose state is still pending/provisioning/running
+	// needs to be flipped to failed so its slot is released.
+	ListNonTerminalInstancesForNode(ctx context.Context, nodeID uuid.UUID) ([]ListNonTerminalInstancesForNodeRow, error)
 	ListSSHKeysForUser(ctx context.Context, userID uuid.UUID) ([]SshKey, error)
 	// Slot view across all nodes — admin needs the global picture, not per-node.
 	ListSlotsForAdminView(ctx context.Context) ([]ListSlotsForAdminViewRow, error)
@@ -60,7 +68,23 @@ type Querier interface {
 	// a single advisory-lock namespace derived from the node UUID. Held until
 	// COMMIT/ROLLBACK.
 	LockNodeForReservation(ctx context.Context, dollar_1 string) error
+	// ssh-proxy authenticates a user by SSH key fingerprint. Returns the row so
+	// the caller can scope subsequent lookups by owner_id without the fingerprint
+	// being globally unique (we still trust the (user_id, fingerprint) unique
+	// constraint per the schema).
+	LookupSSHKeyByFingerprint(ctx context.Context, fingerprint string) (SshKey, error)
 	MarkStaleNodesOffline(ctx context.Context, dollar_1 pgtype.Timestamptz) (int64, error)
+	// Same as MarkStaleNodesOffline but returns the ids of nodes that just
+	// transitioned. Used by the stale sweeper to fail any non-terminal
+	// instances pinned to that node so their slots are released and the
+	// user-facing state machine catches up to the underlying agent loss.
+	MarkStaleNodesOfflineReturning(ctx context.Context, dollar_1 pgtype.Timestamptz) ([]uuid.UUID, error)
+	// Startup-time sweeper. Reservations are transactional-ish state held by
+	// the live main-api process; on a fresh boot every slot still in 'reserved'
+	// without a current_instance_id is by definition orphaned (the process that
+	// reserved it died before binding). Frees them so capacity is not lost
+	// across restarts. Bound (in_use) slots are left untouched.
+	ReleaseAllOrphanReservedSlots(ctx context.Context) (int64, error)
 	// Rollback helper for the scheduler: frees slots that were reserved but not
 	// yet bound to an instance (e.g. CreateInstance dispatch failed).
 	ReleaseReservedSlots(ctx context.Context, ids []uuid.UUID) (int64, error)

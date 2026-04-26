@@ -164,6 +164,26 @@ func (q *Queries) LockNodeForReservation(ctx context.Context, dollar_1 string) e
 	return err
 }
 
+const releaseAllOrphanReservedSlots = `-- name: ReleaseAllOrphanReservedSlots :execrows
+update gpu_slots
+set status              = 'free',
+    current_instance_id = null
+where status = 'reserved' and current_instance_id is null
+`
+
+// Startup-time sweeper. Reservations are transactional-ish state held by
+// the live main-api process; on a fresh boot every slot still in 'reserved'
+// without a current_instance_id is by definition orphaned (the process that
+// reserved it died before binding). Frees them so capacity is not lost
+// across restarts. Bound (in_use) slots are left untouched.
+func (q *Queries) ReleaseAllOrphanReservedSlots(ctx context.Context) (int64, error) {
+	result, err := q.db.Exec(ctx, releaseAllOrphanReservedSlots)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const releaseReservedSlots = `-- name: ReleaseReservedSlots :execrows
 update gpu_slots
 set status              = 'free',

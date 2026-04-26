@@ -78,6 +78,8 @@ func main() {
 	instances := instance.NewRepo(pool, queries)
 	slots := slot.NewRepo(pool, queries).WithLogger(log)
 
+	recoverOrphanReservations(ctx, log, slots)
+
 	zoneID, err := nodes.DefaultZoneID(ctx)
 	if err != nil {
 		log.Error("default zone", "err", err)
@@ -154,6 +156,7 @@ func main() {
 			Nodes:     nodes,
 			Registry:  registry,
 			Signer:    signer,
+			SSHKeys:   sshKeysRepo,
 		}, cfg.InternalToken)
 		log.Info("ssh-ticket endpoint enabled", "ttl", cfg.TicketTTL)
 	}
@@ -165,9 +168,10 @@ func main() {
 		Users:   authRepo,
 		Limiter: loginLimiter,
 		Config: api.AuthConfig{
-			SessionTTL:   cfg.SessionTTL,
-			CookieSecure: cfg.CookieSecure,
-			CookieDomain: cfg.CookieDomain,
+			SessionTTL:       cfg.SessionTTL,
+			CookieSecure:     cfg.CookieSecure,
+			CookieDomain:     cfg.CookieDomain,
+			TrustedProxyHops: cfg.TrustedProxyHops,
 		},
 	}
 	userRouter := api.NewUserRouter(api.UserHandlers{
@@ -228,6 +232,22 @@ func main() {
 	grpcServer.GracefulStop()
 	wg.Wait()
 	log.Info("exit")
+}
+
+// recoverOrphanReservations releases slot rows still in 'reserved' state at
+// boot — they belong to a previous main-api process that died between
+// Reserve and BindToInstance. Logs the count when nonzero; fatal-exits on
+// query failure since we can't safely accept new instance creates with
+// stale reservations holding capacity.
+func recoverOrphanReservations(ctx context.Context, log *slog.Logger, slots *slot.Repo) {
+	released, err := slots.RecoverOrphanReservations(ctx)
+	if err != nil {
+		log.Error("recover orphan reservations", "err", err)
+		os.Exit(1)
+	}
+	if released > 0 {
+		log.Warn("released orphan slot reservations on boot", "count", released)
+	}
 }
 
 // runMigrations applies schema changes and returns true when the caller

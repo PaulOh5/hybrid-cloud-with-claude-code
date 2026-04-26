@@ -38,5 +38,26 @@ set status     = 'offline',
 where status <> 'offline'
   and (last_heartbeat_at is null or last_heartbeat_at < $1::timestamptz);
 
+-- name: MarkStaleNodesOfflineReturning :many
+-- Same as MarkStaleNodesOffline but returns the ids of nodes that just
+-- transitioned. Used by the stale sweeper to fail any non-terminal
+-- instances pinned to that node so their slots are released and the
+-- user-facing state machine catches up to the underlying agent loss.
+update nodes
+set status     = 'offline',
+    updated_at = now()
+where status <> 'offline'
+  and (last_heartbeat_at is null or last_heartbeat_at < $1::timestamptz)
+returning id;
+
+-- name: ListNonTerminalInstancesForNode :many
+-- Counterpart to MarkStaleNodesOfflineReturning — every instance on a
+-- newly-offline node whose state is still pending/provisioning/running
+-- needs to be flipped to failed so its slot is released.
+select id, state
+from instances
+where node_id = $1
+  and state in ('pending', 'provisioning', 'running');
+
 -- name: GetDefaultZone :one
 select * from zones where is_default = true limit 1;
