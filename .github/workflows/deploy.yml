@@ -155,9 +155,21 @@ jobs:
           path: dist/
           retention-days: 14
 
+  preflight:
+    name: Pre-deploy host validation
+    # Runs on the same self-hosted runner that deploy uses — checks the host
+    # state (env file keys, paths, free space, container health, etc.) so
+    # config drift fails the run BEFORE deploy.sh starts mutating production.
+    needs: resolve-sha
+    runs-on: [self-hosted, h20a, production]
+    environment: production
+    steps:
+      - name: Run preflight.sh
+        run: bash "$HOME/hybrid-cloud/scripts/preflight.sh"
+
   deploy:
     name: Deploy to h20a
-    needs: [resolve-sha, build]
+    needs: [resolve-sha, build, preflight]
     # Self-hosted runner runs ON h20a as the `hybrid` user. The host's
     # public IP is geo-blocked for foreign sources, so SSH from
     # GitHub-hosted runners isn't possible — outbound from h20a is.
