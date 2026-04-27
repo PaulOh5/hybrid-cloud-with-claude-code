@@ -128,6 +128,14 @@ bootstrap_main_api() {
         ca-certificates curl gnupg jq postgresql-16 \
         debian-keyring debian-archive-keyring apt-transport-https
 
+    # Node.js 22 (LTS) for the Next.js standalone frontend. Ubuntu's stock
+    # nodejs lags behind what Next.js 16 expects (>=20), so use NodeSource.
+    if ! command -v node >/dev/null 2>&1 || ! node --version | grep -q '^v2[2-9]'; then
+        log "installing Node.js 22 LTS via NodeSource"
+        curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nodejs
+    fi
+
     if ! command -v caddy >/dev/null 2>&1; then
         log "installing Caddy from official apt repo"
         curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' \
@@ -136,6 +144,15 @@ bootstrap_main_api() {
             > /etc/apt/sources.list.d/caddy-stable.list
         apt-get update -qq
         apt-get install -y -qq caddy
+    fi
+
+    # The cloudsmith Caddy build does NOT include the route53 DNS provider.
+    # Caddy 2.7+ supports dynamic add-package which downloads xcaddy and
+    # rebuilds /usr/bin/caddy with the requested module. Idempotent — the
+    # command errors out if the module is already present, so we check first.
+    if ! caddy list-modules 2>/dev/null | grep -q '^dns.providers.route53'; then
+        log "adding caddy-dns/route53 module via 'caddy add-package'"
+        caddy add-package github.com/caddy-dns/route53
     fi
 
     # Postgres: create role + database. Re-runs are idempotent because we
