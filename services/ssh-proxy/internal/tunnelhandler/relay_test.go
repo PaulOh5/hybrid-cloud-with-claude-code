@@ -6,44 +6,58 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
+	"log/slog"
 	"net"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"golang.org/x/crypto/ssh"
 
 	"hybridcloud/services/ssh-proxy/internal/ticketclient"
 	"hybridcloud/services/ssh-proxy/internal/tunnelhandler"
 )
 
-// fakeAgentTunnel accepts one connection, reads the JSON header, and then
-// echoes every byte back on the same socket — a simple stand-in for the
-// real agent's tunnel server.
-func fakeAgentTunnel(t *testing.T) (string, chan string) {
-	t.Helper()
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
+// fakeOpener is a StreamOpener stand-in that returns one side of a
+// net.Pipe per call. The other side is captured per nodeID so tests can
+// drive bytes "from the agent side" of the simulated mux stream.
+type fakeOpener struct {
+	mu       sync.Mutex
+	streams  map[string]net.Conn // node_id -> our half (the one we hand to Relay)
+	agents   map[string]net.Conn // node_id -> the agent-facing half
+	openErr  error
+	openCall atomic.Int64
+}
+
+func newFakeOpener() *fakeOpener {
+	return &fakeOpener{
+		streams: map[string]net.Conn{},
+		agents:  map[string]net.Conn{},
 	}
-	headerCh := make(chan string, 1)
-	go func() {
-		defer func() { _ = lis.Close() }()
-		conn, err := lis.Accept()
-		if err != nil {
-			return
-		}
-		defer func() { _ = conn.Close() }()
-		r := bufio.NewReader(conn)
-		line, err := r.ReadString('\n')
-		if err != nil {
-			return
-		}
-		headerCh <- line
-		_, _ = io.Copy(conn, r)
-	}()
-	t.Cleanup(func() { _ = lis.Close() })
-	return lis.Addr().String(), headerCh
+}
+
+func (f *fakeOpener) OpenStream(_ context.Context, nodeID string) (net.Conn, error) {
+	f.openCall.Add(1)
+	if f.openErr != nil {
+		return nil, f.openErr
+	}
+	a, b := net.Pipe()
+	f.mu.Lock()
+	f.streams[nodeID] = a
+	f.agents[nodeID] = b
+	f.mu.Unlock()
+	return a, nil
+}
+
+func (f *fakeOpener) agent(nodeID string) net.Conn {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.agents[nodeID]
 }
 
 // pipeChannel wraps a net.Pipe so we can use one side as an ssh.Channel and
@@ -58,21 +72,32 @@ func (c *pipeChannel) SendRequest(string, bool, []byte) (bool, error) { return f
 
 var _ ssh.Channel = (*pipeChannel)(nil)
 
-func TestRelay_Roundtrip(t *testing.T) {
-	t.Parallel()
-
-	agentAddr, headerCh := fakeAgentTunnel(t)
-
-	// Payload: agent learns the tunnel endpoint for verification; proxy's
-	// Relay reads it to know where to dial.
-	payload, _ := json.Marshal(map[string]any{
-		"session_id":      "sess",
-		"tunnel_endpoint": agentAddr,
-	})
-	signed := ticketclient.Signed{
-		Payload:   base64.StdEncoding.EncodeToString(payload),
+func makeSigned(t *testing.T, p any) ticketclient.Signed {
+	t.Helper()
+	body, err := json.Marshal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ticketclient.Signed{
+		Payload:   base64.StdEncoding.EncodeToString(body),
 		Signature: "sig",
 	}
+}
+
+func TestRelay_OpensMuxStreamByNodeID(t *testing.T) {
+	t.Parallel()
+
+	nodeID := uuid.New().String()
+	opener := newFakeOpener()
+	relayer := &tunnelhandler.Relayer{Opener: opener, Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+
+	signed := makeSigned(t, map[string]any{
+		"session_id":     "sess-1",
+		"node_id":        nodeID,
+		"vm_internal_ip": "192.168.122.47",
+		"vm_port":        22,
+		"expires_at":     time.Now().Add(time.Minute).UTC().Format(time.RFC3339Nano),
+	})
 
 	client, server := net.Pipe()
 	defer func() { _ = client.Close() }()
@@ -81,26 +106,49 @@ func TestRelay_Roundtrip(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	go func() {
-		_ = tunnelhandler.Relay(ctx, "sess", signed, ch)
-	}()
+	go func() { _ = relayer.Relay(ctx, "sess-1", signed, ch) }()
 
-	// Expect the header on the fake agent side.
-	select {
-	case line := <-headerCh:
-		var got ticketclient.Signed
-		if err := json.Unmarshal([]byte(line), &got); err != nil {
-			t.Fatalf("header parse: %v", err)
+	// Wait for the opener to receive the call.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if opener.openCall.Load() == 1 {
+			break
 		}
-		if got.Signature != "sig" {
-			t.Fatalf("signature: %q", got.Signature)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for header")
+		time.Sleep(20 * time.Millisecond)
+	}
+	if opener.openCall.Load() != 1 {
+		t.Fatalf("opener calls: got %d, want 1", opener.openCall.Load())
 	}
 
-	// Now drive bytes from proxy-client side into Relay, which should
-	// forward to agent → agent echoes → Relay copies back to us.
+	// Read the agent-side header that ssh-proxy writes on the stream.
+	agentSide := opener.agent(nodeID)
+	if agentSide == nil {
+		t.Fatalf("opener did not register stream for node %s", nodeID)
+	}
+	_ = agentSide.SetReadDeadline(time.Now().Add(2 * time.Second))
+	br := bufio.NewReader(agentSide)
+	line, err := br.ReadString('\n')
+	if err != nil {
+		t.Fatalf("read header: %v", err)
+	}
+
+	var hdr struct {
+		InstanceID   string `json:"instance_id"`
+		VMInternalIP string `json:"vm_internal_ip"`
+		VMPort       uint16 `json:"vm_port"`
+	}
+	if err := json.Unmarshal([]byte(line), &hdr); err != nil {
+		t.Fatalf("parse header: %v body=%q", err, line)
+	}
+	if hdr.VMInternalIP != "192.168.122.47" || hdr.VMPort != 22 {
+		t.Fatalf("header fields: %+v", hdr)
+	}
+
+	// Bidirectional copy: client writes "hello\n", agent echoes back through
+	// the simulated stream.
+	go func() {
+		_, _ = io.Copy(agentSide, agentSide)
+	}()
 	if _, err := client.Write([]byte("hello\n")); err != nil {
 		t.Fatal(err)
 	}
@@ -114,25 +162,80 @@ func TestRelay_Roundtrip(t *testing.T) {
 	}
 }
 
-func TestRelay_RejectsEmptyEndpoint(t *testing.T) {
+func TestRelay_UnknownNodeReturnsError(t *testing.T) {
 	t.Parallel()
 
-	payload, _ := json.Marshal(map[string]any{"session_id": "x", "tunnel_endpoint": ""})
-	signed := ticketclient.Signed{
-		Payload:   base64.StdEncoding.EncodeToString(payload),
-		Signature: "s",
-	}
+	opener := newFakeOpener()
+	opener.openErr = errors.New("muxregistry: no session for node")
+	relayer := &tunnelhandler.Relayer{Opener: opener, Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+
+	signed := makeSigned(t, map[string]any{
+		"node_id":        uuid.New().String(),
+		"vm_internal_ip": "192.168.122.47",
+		"vm_port":        22,
+		"expires_at":     time.Now().Add(time.Minute).UTC().Format(time.RFC3339Nano),
+	})
+
 	_, server := net.Pipe()
 	ch := &pipeChannel{Conn: server}
 
-	err := tunnelhandler.Relay(context.Background(), "x", signed, ch)
+	err := relayer.Relay(context.Background(), "x", signed, ch)
 	if err == nil {
-		t.Fatal("expected error for missing endpoint")
+		t.Fatal("expected error for unknown node")
+	}
+}
+
+func TestRelay_RejectsMissingNodeID(t *testing.T) {
+	t.Parallel()
+
+	opener := newFakeOpener()
+	relayer := &tunnelhandler.Relayer{Opener: opener, Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+
+	signed := makeSigned(t, map[string]any{
+		"vm_internal_ip": "192.168.122.47",
+		"vm_port":        22,
+	})
+	_, server := net.Pipe()
+	ch := &pipeChannel{Conn: server}
+
+	err := relayer.Relay(context.Background(), "x", signed, ch)
+	if err == nil {
+		t.Fatal("expected error for missing node_id")
+	}
+	if opener.openCall.Load() != 0 {
+		t.Fatalf("OpenStream should not be called for invalid payload, got %d", opener.openCall.Load())
+	}
+}
+
+func TestRelay_RejectsExpiredTicket(t *testing.T) {
+	t.Parallel()
+
+	opener := newFakeOpener()
+	relayer := &tunnelhandler.Relayer{Opener: opener, Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+
+	signed := makeSigned(t, map[string]any{
+		"node_id":        uuid.New().String(),
+		"vm_internal_ip": "192.168.122.47",
+		"vm_port":        22,
+		"expires_at":     time.Now().Add(-time.Minute).UTC().Format(time.RFC3339Nano),
+	})
+	_, server := net.Pipe()
+	ch := &pipeChannel{Conn: server}
+
+	err := relayer.Relay(context.Background(), "x", signed, ch)
+	if err == nil {
+		t.Fatal("expected error for expired ticket")
+	}
+	if opener.openCall.Load() != 0 {
+		t.Fatalf("OpenStream should not be called for expired ticket, got %d", opener.openCall.Load())
 	}
 }
 
 func TestRelay_RejectsBadPayload(t *testing.T) {
 	t.Parallel()
+
+	opener := newFakeOpener()
+	relayer := &tunnelhandler.Relayer{Opener: opener, Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
 
 	signed := ticketclient.Signed{
 		Payload:   "%%notbase64%%",
@@ -141,8 +244,34 @@ func TestRelay_RejectsBadPayload(t *testing.T) {
 	_, server := net.Pipe()
 	ch := &pipeChannel{Conn: server}
 
-	err := tunnelhandler.Relay(context.Background(), "x", signed, ch)
+	err := relayer.Relay(context.Background(), "x", signed, ch)
 	if err == nil {
 		t.Fatal("expected decode error")
 	}
 }
+
+// Smoke-check that the legacy Relay function still exists for v1.x callers
+// that haven't migrated yet — it should now be a thin wrapper that returns
+// an error explaining the migration path. Once Phase 2.4 fully removes the
+// Phase 1 path this test goes away too.
+func TestLegacyRelayFunctionReturnsMigrationError(t *testing.T) {
+	t.Parallel()
+
+	if tunnelhandler.Relay == nil {
+		// Acceptable: the symbol may have been removed already. Skip.
+		t.Skip("legacy Relay removed")
+	}
+	signed := makeSigned(t, map[string]any{"node_id": uuid.New().String()})
+	_, server := net.Pipe()
+	ch := &pipeChannel{Conn: server}
+
+	err := tunnelhandler.Relay(context.Background(), "x", signed, ch)
+	if err == nil {
+		t.Fatal("expected legacy Relay to return migration error")
+	}
+}
+
+// Helper: a quoting print so failing tests show full body bytes.
+func dumpBytes(b []byte) string { return fmt.Sprintf("%q", b) }
+
+var _ = dumpBytes
