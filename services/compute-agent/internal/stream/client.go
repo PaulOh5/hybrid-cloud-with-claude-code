@@ -46,6 +46,13 @@ type Config struct {
 	// writes back to main-api via the session's single send goroutine.
 	OnControl func(ctx context.Context, msg *agentv1.ControlMessage, send func(*agentv1.AgentMessage))
 
+	// OnRegistered fires synchronously after each successful Register +
+	// RegisterAck. Phase 2.2 uses it to bootstrap muxclient with the
+	// assigned node_id once main-api confirms identity. Called once per
+	// runOnce iteration; main-loop callers should sync.Once-gate any
+	// kick-off they do here. Optional.
+	OnRegistered func(nodeID string)
+
 	Log *slog.Logger
 }
 
@@ -161,6 +168,10 @@ func (c *Client) runOnce(ctx context.Context) error {
 		"node_id", ra.NodeId,
 		"heartbeat_seconds", ra.HeartbeatIntervalSeconds,
 	)
+
+	if c.cfg.OnRegistered != nil {
+		c.cfg.OnRegistered(ra.NodeId)
+	}
 
 	interval := time.Duration(ra.HeartbeatIntervalSeconds) * time.Second
 	if interval <= 0 {
