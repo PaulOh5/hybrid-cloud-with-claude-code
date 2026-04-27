@@ -7,7 +7,6 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
-	"net"
 	"os"
 	"os/signal"
 	"syscall"
@@ -17,7 +16,6 @@ import (
 	"hybridcloud/services/compute-agent/internal/profile"
 	"hybridcloud/services/compute-agent/internal/stream"
 	"hybridcloud/services/compute-agent/internal/topology"
-	"hybridcloud/services/compute-agent/internal/tunnel"
 	"hybridcloud/services/compute-agent/internal/vm"
 	agentv1 "hybridcloud/shared/proto/agent/v1"
 )
@@ -28,21 +26,18 @@ const shutdownGrace = 30 * time.Second
 
 func main() {
 	var (
-		endpoint        = flag.String("endpoint", env("AGENT_API_ENDPOINT", "localhost:8081"), "main-api gRPC endpoint")
-		nodeName        = flag.String("node-name", env("AGENT_NODE_NAME", ""), "stable node name")
-		token           = flag.String("agent-token", env("AGENT_API_TOKEN", ""), "shared secret for main-api")
-		agentVersion    = flag.String("agent-version", "0.1.0", "agent build version")
-		fakeTopology    = flag.Bool("fake-topology", env("AGENT_FAKE_TOPOLOGY", "") == "1", "report empty topology")
-		disableVMs      = flag.Bool("disable-vms", env("AGENT_DISABLE_VMS", "") == "1", "skip libvirt wiring (control-plane-only mode)")
-		imageDir        = flag.String("image-dir", env("AGENT_IMAGE_DIR", "/var/lib/hybrid/images"), "per-VM qcow2 directory")
-		seedDir         = flag.String("seed-dir", env("AGENT_SEED_DIR", "/var/lib/hybrid/seeds"), "cloud-init ISO directory")
-		baseImage       = flag.String("base-image", env("AGENT_BASE_IMAGE", ""), "backing qcow2 for new VM disks")
-		netName         = flag.String("network", env("AGENT_LIBVIRT_NETWORK", "default"), "libvirt network to attach VMs to")
-		diskGB          = flag.Int("disk-gb", envInt("AGENT_DISK_GB", 50), "per-VM virtual disk size in GiB (cloud-init growpart fills it on boot)")
-		profilePath     = flag.String("profile", env("AGENT_PROFILE", ""), "path to slot-layout YAML (see docs/specs/phase-1-mvp.md §GPU partitioning)")
-		tunnelAdvertise = flag.String("tunnel-advertise", env("AGENT_TUNNEL_ADVERTISE", ""), "host:port ssh-proxy should dial to tunnel SSH bytes to this node's VMs")
-		tunnelListen    = flag.String("tunnel-listen", env("AGENT_TUNNEL_LISTEN", ""), "TCP address to bind the ssh-tunnel listener; empty disables the tunnel server")
-		tunnelSecret    = flag.String("tunnel-secret", env("AGENT_TUNNEL_SECRET", ""), "shared HMAC secret for ticket verification (matches main-api MAIN_API_TUNNEL_SECRET)")
+		endpoint     = flag.String("endpoint", env("AGENT_API_ENDPOINT", "localhost:8081"), "main-api gRPC endpoint")
+		nodeName     = flag.String("node-name", env("AGENT_NODE_NAME", ""), "stable node name")
+		token        = flag.String("agent-token", env("AGENT_API_TOKEN", ""), "shared secret for main-api")
+		agentVersion = flag.String("agent-version", "0.1.0", "agent build version")
+		fakeTopology = flag.Bool("fake-topology", env("AGENT_FAKE_TOPOLOGY", "") == "1", "report empty topology")
+		disableVMs   = flag.Bool("disable-vms", env("AGENT_DISABLE_VMS", "") == "1", "skip libvirt wiring (control-plane-only mode)")
+		imageDir     = flag.String("image-dir", env("AGENT_IMAGE_DIR", "/var/lib/hybrid/images"), "per-VM qcow2 directory")
+		seedDir      = flag.String("seed-dir", env("AGENT_SEED_DIR", "/var/lib/hybrid/seeds"), "cloud-init ISO directory")
+		baseImage    = flag.String("base-image", env("AGENT_BASE_IMAGE", ""), "backing qcow2 for new VM disks")
+		netName      = flag.String("network", env("AGENT_LIBVIRT_NETWORK", "default"), "libvirt network to attach VMs to")
+		diskGB       = flag.Int("disk-gb", envInt("AGENT_DISK_GB", 50), "per-VM virtual disk size in GiB (cloud-init growpart fills it on boot)")
+		profilePath  = flag.String("profile", env("AGENT_PROFILE", ""), "path to slot-layout YAML (see docs/specs/phase-1-mvp.md §GPU partitioning)")
 	)
 	flag.Parse()
 
@@ -111,15 +106,14 @@ func main() {
 	}
 
 	client, err := stream.New(stream.Config{
-		Endpoint:       *endpoint,
-		NodeName:       *nodeName,
-		Hostname:       hostname,
-		AgentVersion:   *agentVersion,
-		AgentToken:     *token,
-		TunnelEndpoint: *tunnelAdvertise,
-		Topology:       collector,
-		OnControl:      onControl,
-		Log:            log,
+		Endpoint:     *endpoint,
+		NodeName:     *nodeName,
+		Hostname:     hostname,
+		AgentVersion: *agentVersion,
+		AgentToken:   *token,
+		Topology:     collector,
+		OnControl:    onControl,
+		Log:          log,
 	})
 	if err != nil {
 		log.Error("stream.New", "err", err)
@@ -128,10 +122,6 @@ func main() {
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-
-	// SSH tunnel listener (Phase 6). Optional — empty --tunnel-listen keeps
-	// the agent fully outbound for Phase 1 bring-up.
-	startTunnelServer(ctx, log, *tunnelListen, *tunnelSecret, *tunnelAdvertise)
 
 	log.Info("compute-agent starting", "endpoint", *endpoint, "node_name", *nodeName, "vms_disabled", *disableVMs)
 
@@ -172,36 +162,6 @@ func envInt(key string, fallback int) int {
 		return fallback
 	}
 	return n
-}
-
-// startTunnelServer wires the Phase 6 SSH tunnel listener when --tunnel-
-// listen is set. Fatal-exits on misconfiguration; otherwise runs the
-// listener as a goroutine that shuts down with ctx.
-func startTunnelServer(ctx context.Context, log *slog.Logger, listen, secret, advertise string) {
-	if listen == "" {
-		return
-	}
-	if secret == "" {
-		log.Error("--tunnel-listen requires --tunnel-secret")
-		os.Exit(2)
-	}
-	verifier, err := tunnel.NewHMACVerifier([]byte(secret))
-	if err != nil {
-		log.Error("tunnel verifier", "err", err)
-		os.Exit(2)
-	}
-	tsrv, err := tunnel.New(tunnel.Config{Verifier: verifier, Log: log})
-	if err != nil {
-		log.Error("tunnel.New", "err", err)
-		os.Exit(2)
-	}
-	lis, err := net.Listen("tcp", listen)
-	if err != nil {
-		log.Error("tunnel listen", "addr", listen, "err", err)
-		os.Exit(1)
-	}
-	log.Info("tunnel listening", "addr", listen, "advertise", advertise)
-	go func() { _ = tsrv.Serve(ctx, lis) }()
 }
 
 // detectGPUIndices returns the GPU indices present on the host so profile
