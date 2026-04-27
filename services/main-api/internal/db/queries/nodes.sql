@@ -61,3 +61,16 @@ where node_id = $1
 
 -- name: GetDefaultZone :one
 select * from zones where is_default = true limit 1;
+
+-- name: NodeAccessPolicy :one
+-- Phase 2 (ADR-011). Returns the ACL inputs the scheduler needs to filter
+-- candidate slots and the Phase 2 state machine fields used by the grace
+-- period watcher.
+select
+    id,
+    access_policy,
+    owner_team_id,
+    node_state,
+    last_data_plane_at
+from nodes
+where id = $1;

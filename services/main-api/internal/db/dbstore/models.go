@@ -224,6 +224,19 @@ type Node struct {
 	LastHeartbeatAt pgtype.Timestamptz `json:"last_heartbeat_at"`
 	RegisteredAt    pgtype.Timestamptz `json:"registered_at"`
 	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
+	AccessPolicy    string             `json:"access_policy"`
+	OwnerTeamID     uuid.NullUUID      `json:"owner_team_id"`
+	LastDataPlaneAt pgtype.Timestamptz `json:"last_data_plane_at"`
+	NodeState       string             `json:"node_state"`
+}
+
+type NodeToken struct {
+	ID        uuid.UUID          `json:"id"`
+	NodeID    uuid.UUID          `json:"node_id"`
+	TokenHash string             `json:"token_hash"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	RevokedAt pgtype.Timestamptz `json:"revoked_at"`
+	CreatedBy uuid.NullUUID      `json:"created_by"`
 }
 
 type Session struct {
