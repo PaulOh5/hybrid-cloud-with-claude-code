@@ -78,6 +78,12 @@ func FromEnv() (Config, error) {
 	if len(c.TunnelSecret) > 0 && len(c.TunnelSecret) < 16 {
 		return c, errors.New("MAIN_API_TUNNEL_SECRET must be at least 16 bytes")
 	}
+	// Phase 2 (Task 0.4): production must reject a short internal token. The
+	// dev path (CookieSecure=false) still allows short or empty tokens for
+	// localhost bring-up.
+	if c.CookieSecure && len(c.InternalToken) < 32 {
+		return c, errors.New("MAIN_API_INTERNAL_TOKEN must be at least 32 bytes in production")
+	}
 	return c, nil
 }
 

@@ -40,6 +40,44 @@ func (q *Queries) GetActiveNodeToken(ctx context.Context, arg GetActiveNodeToken
 	return i, err
 }
 
+const listActiveNodeTokens = `-- name: ListActiveNodeTokens :many
+select id, node_id, token_hash, created_at, revoked_at, created_by
+from node_tokens
+where node_id    = $1
+  and revoked_at is null
+`
+
+// Used by the agentauth handler (Task 0.4). Returns the bcrypt hashes the
+// handler bcrypt-compares the presented plaintext token against. Filtering
+// revoked rows in SQL keeps a just-revoked credential out of the loop the
+// moment NodeTokenRevoke runs.
+func (q *Queries) ListActiveNodeTokens(ctx context.Context, nodeID uuid.UUID) ([]NodeToken, error) {
+	rows, err := q.db.Query(ctx, listActiveNodeTokens, nodeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []NodeToken{}
+	for rows.Next() {
+		var i NodeToken
+		if err := rows.Scan(
+			&i.ID,
+			&i.NodeID,
+			&i.TokenHash,
+			&i.CreatedAt,
+			&i.RevokedAt,
+			&i.CreatedBy,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listNodeTokens = `-- name: ListNodeTokens :many
 select id, node_id, token_hash, created_at, revoked_at, created_by
 from node_tokens

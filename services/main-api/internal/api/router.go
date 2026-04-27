@@ -25,9 +25,16 @@ func NewAdminRouter(nodes *AdminHandlers, instances *InstanceHandlers, credits *
 
 // NewInternalRouter wires the /internal/* endpoints (ssh-proxy ↔ main-api
 // today) behind the internal bearer token.
-func NewInternalRouter(deps SSHTicketDeps, internalToken string) http.Handler {
+//
+// Phase 2 ADR-009: ssh-proxy validates agent (node_id, token) pairs by
+// posting to /internal/agent-auth. The agentAuth handler is optional so
+// Phase 1 deployments without the Phase 2 schema still boot.
+func NewInternalRouter(deps SSHTicketDeps, agentAuth http.Handler, internalToken string) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /internal/ssh-ticket", SSHTicketHandler(deps))
+	if agentAuth != nil {
+		mux.Handle("POST /internal/agent-auth", agentAuth)
+	}
 	return RequireInternalToken(internalToken)(mux)
 }
 
