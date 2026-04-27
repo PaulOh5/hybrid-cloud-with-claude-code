@@ -30,7 +30,7 @@ func (q *Queries) GetDefaultZone(ctx context.Context) (Zone, error) {
 }
 
 const getNode = `-- name: GetNode :one
-select id, zone_id, node_name, hostname, agent_version, status, topology_json, profile_hash, last_heartbeat_at, registered_at, updated_at from nodes where id = $1
+select id, zone_id, node_name, hostname, agent_version, status, topology_json, profile_hash, last_heartbeat_at, registered_at, updated_at, access_policy, owner_team_id, last_data_plane_at, node_state from nodes where id = $1
 `
 
 func (q *Queries) GetNode(ctx context.Context, id uuid.UUID) (Node, error) {
@@ -48,12 +48,16 @@ func (q *Queries) GetNode(ctx context.Context, id uuid.UUID) (Node, error) {
 		&i.LastHeartbeatAt,
 		&i.RegisteredAt,
 		&i.UpdatedAt,
+		&i.AccessPolicy,
+		&i.OwnerTeamID,
+		&i.LastDataPlaneAt,
+		&i.NodeState,
 	)
 	return i, err
 }
 
 const getNodeByName = `-- name: GetNodeByName :one
-select id, zone_id, node_name, hostname, agent_version, status, topology_json, profile_hash, last_heartbeat_at, registered_at, updated_at from nodes where node_name = $1
+select id, zone_id, node_name, hostname, agent_version, status, topology_json, profile_hash, last_heartbeat_at, registered_at, updated_at, access_policy, owner_team_id, last_data_plane_at, node_state from nodes where node_name = $1
 `
 
 func (q *Queries) GetNodeByName(ctx context.Context, nodeName string) (Node, error) {
@@ -71,12 +75,16 @@ func (q *Queries) GetNodeByName(ctx context.Context, nodeName string) (Node, err
 		&i.LastHeartbeatAt,
 		&i.RegisteredAt,
 		&i.UpdatedAt,
+		&i.AccessPolicy,
+		&i.OwnerTeamID,
+		&i.LastDataPlaneAt,
+		&i.NodeState,
 	)
 	return i, err
 }
 
 const listNodes = `-- name: ListNodes :many
-select id, zone_id, node_name, hostname, agent_version, status, topology_json, profile_hash, last_heartbeat_at, registered_at, updated_at from nodes order by node_name
+select id, zone_id, node_name, hostname, agent_version, status, topology_json, profile_hash, last_heartbeat_at, registered_at, updated_at, access_policy, owner_team_id, last_data_plane_at, node_state from nodes order by node_name
 `
 
 func (q *Queries) ListNodes(ctx context.Context) ([]Node, error) {
@@ -100,6 +108,10 @@ func (q *Queries) ListNodes(ctx context.Context) ([]Node, error) {
 			&i.LastHeartbeatAt,
 			&i.RegisteredAt,
 			&i.UpdatedAt,
+			&i.AccessPolicy,
+			&i.OwnerTeamID,
+			&i.LastDataPlaneAt,
+			&i.NodeState,
 		); err != nil {
 			return nil, err
 		}
@@ -195,6 +207,41 @@ func (q *Queries) MarkStaleNodesOfflineReturning(ctx context.Context, dollar_1 p
 	return items, nil
 }
 
+const nodeAccessPolicy = `-- name: NodeAccessPolicy :one
+select
+    id,
+    access_policy,
+    owner_team_id,
+    node_state,
+    last_data_plane_at
+from nodes
+where id = $1
+`
+
+type NodeAccessPolicyRow struct {
+	ID              uuid.UUID          `json:"id"`
+	AccessPolicy    string             `json:"access_policy"`
+	OwnerTeamID     uuid.NullUUID      `json:"owner_team_id"`
+	NodeState       string             `json:"node_state"`
+	LastDataPlaneAt pgtype.Timestamptz `json:"last_data_plane_at"`
+}
+
+// Phase 2 (ADR-011). Returns the ACL inputs the scheduler needs to filter
+// candidate slots and the Phase 2 state machine fields used by the grace
+// period watcher.
+func (q *Queries) NodeAccessPolicy(ctx context.Context, id uuid.UUID) (NodeAccessPolicyRow, error) {
+	row := q.db.QueryRow(ctx, nodeAccessPolicy, id)
+	var i NodeAccessPolicyRow
+	err := row.Scan(
+		&i.ID,
+		&i.AccessPolicy,
+		&i.OwnerTeamID,
+		&i.NodeState,
+		&i.LastDataPlaneAt,
+	)
+	return i, err
+}
+
 const touchNodeHeartbeat = `-- name: TouchNodeHeartbeat :exec
 update nodes
 set last_heartbeat_at = now(),
@@ -223,7 +270,7 @@ on conflict (node_name) do update set
     topology_json     = excluded.topology_json,
     last_heartbeat_at = now(),
     updated_at        = now()
-returning id, zone_id, node_name, hostname, agent_version, status, topology_json, profile_hash, last_heartbeat_at, registered_at, updated_at
+returning id, zone_id, node_name, hostname, agent_version, status, topology_json, profile_hash, last_heartbeat_at, registered_at, updated_at, access_policy, owner_team_id, last_data_plane_at, node_state
 `
 
 type UpsertNodeParams struct {
@@ -255,6 +302,10 @@ func (q *Queries) UpsertNode(ctx context.Context, arg UpsertNodeParams) (Node, e
 		&i.LastHeartbeatAt,
 		&i.RegisteredAt,
 		&i.UpdatedAt,
+		&i.AccessPolicy,
+		&i.OwnerTeamID,
+		&i.LastDataPlaneAt,
+		&i.NodeState,
 	)
 	return i, err
 }

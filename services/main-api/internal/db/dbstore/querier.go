@@ -24,6 +24,9 @@ type Querier interface {
 	DeleteSSHKeyForUser(ctx context.Context, arg DeleteSSHKeyForUserParams) (int64, error)
 	DeleteSessionByTokenHash(ctx context.Context, tokenHash string) error
 	DeleteSlotsForNode(ctx context.Context, nodeID uuid.UUID) (int64, error)
+	// Lookup used by the /internal/agent-auth handler (Task 0.4) to confirm a
+	// presented hash belongs to the claimed node and has not been revoked.
+	GetActiveNodeToken(ctx context.Context, arg GetActiveNodeTokenParams) (NodeToken, error)
 	// 사용자 잔액 row. 없으면 pgx.ErrNoRows.
 	GetCredits(ctx context.Context, userID uuid.UUID) (Credit, error)
 	GetDefaultZone(ctx context.Context) (Zone, error)
@@ -49,6 +52,8 @@ type Querier interface {
 	// subdomain prefix scoped to the authenticated owner. LIMIT 2 lets the caller
 	// detect ambiguity without paying for the full match set.
 	ListInstancesByOwnerAndIDPrefix(ctx context.Context, arg ListInstancesByOwnerAndIDPrefixParams) ([]Instance, error)
+	// Admin CLI (Task 3.2) listing — both active and revoked, newest first.
+	ListNodeTokens(ctx context.Context, nodeID uuid.UUID) ([]NodeToken, error)
 	ListNodes(ctx context.Context) ([]Node, error)
 	// Counterpart to MarkStaleNodesOfflineReturning — every instance on a
 	// newly-offline node whose state is still pending/provisioning/running
@@ -79,6 +84,16 @@ type Querier interface {
 	// instances pinned to that node so their slots are released and the
 	// user-facing state machine catches up to the underlying agent loss.
 	MarkStaleNodesOfflineReturning(ctx context.Context, dollar_1 pgtype.Timestamptz) ([]uuid.UUID, error)
+	// Phase 2 (ADR-011). Returns the ACL inputs the scheduler needs to filter
+	// candidate slots and the Phase 2 state machine fields used by the grace
+	// period watcher.
+	NodeAccessPolicy(ctx context.Context, id uuid.UUID) (NodeAccessPolicyRow, error)
+	// Phase 2 (Bring Your Own Node) — see plan Task 0.3, ADR-009.
+	// node_tokens carries the operator-issued credentials an agent uses to
+	// register as a specific node. Plaintext is never stored; rows hold the
+	// bcrypt hash only.
+	NodeTokenInsert(ctx context.Context, arg NodeTokenInsertParams) (NodeToken, error)
+	NodeTokenRevoke(ctx context.Context, id uuid.UUID) error
 	// Startup-time sweeper. Reservations are transactional-ish state held by
 	// the live main-api process; on a fresh boot every slot still in 'reserved'
 	// without a current_instance_id is by definition orphaned (the process that
