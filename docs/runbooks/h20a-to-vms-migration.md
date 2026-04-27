@@ -1,14 +1,16 @@
 # Runbook: h20a 단일 호스트 → 두 EC2 VM 분리 마이그레이션
 
 > 대상: 운영자 (이 작업 1회만)
-> 소요: 20–40분 (DNS TTL 단축 사전 작업 제외)
-> 다운타임: ~10분 (DB dump/restore + DNS 전파)
+> 소요: 20–30분 (DNS TTL 단축 사전 작업 제외)
+> 다운타임: DNS 전파 시간 (TTL 60s)만큼
 > 산출 아키텍처:
 > - main-api VM (`hybrid-main-api.exe.xyz`, public DNS `qlaud.net`) → main-api + frontend + Postgres + admin CLI + Caddy
 > - ssh-proxy VM (`hybrid-ssh-proxy.exe.xyz`, public DNS `*.qlaud.net`) → ssh-proxy + certbot
 > - h20a → compute-agent only (GPU 호스트로만)
 
-이 문서는 **단방향 컷오버**입니다. 단계 5 이후 롤백하려면 DNS만 되돌리면 되지만 (h20a 서비스 즉시 정지하지 말 것), 단계 6 이후엔 h20a 서비스가 멈추므로 의도된 단방향.
+> ⚠ **DB는 초기화합니다.** h20a Postgres의 데이터(사용자 계정, 인스턴스 행, 세션, SSH 키, 크레딧 원장 등)는 **모두 폐기**되고 새 빈 DB로 시작합니다. Phase 2 베타 사용자 0이라 영향이 0이지만, 의도된 동작인지 컷오버 전에 다시 확인하세요. 데이터를 보존해야 하는 경우 이 런북 대신 [pg_dump/pg_restore 변형](#variant-data-preserving-cutover)을 따르세요.
+
+이 문서는 **단방향 컷오버**입니다. DNS 전환 전까지는 새 VM이 idle이라 DNS만 안 바꾸면 위험 0. DNS 전환 후 h20a 서비스를 정지하면 그 시점부터 롤백 비용이 커집니다.
 
 ## 0. 사전 조건
 
@@ -185,33 +187,50 @@ GitHub Actions `Deploy` 워크플로우 실행:
 - **첫 deploy 시에만** workflow input `skip_external_smoke=true`로 설정해 외부 smoke step 건너뛰기. deploy.sh의 로컬 smoke (loopback :8080)가 새 VM 내부 동작을 검증합니다.
 - DNS 전환(단계 7) 이후 평상시 deploy는 `skip_external_smoke=false` (기본값) — 외부 smoke가 새 VM의 실제 응답을 확인.
 
-## 6. Postgres 데이터 이전 (다운타임 시작)
+## 6. DB는 빈 상태에서 시작 — 별도 작업 없음
 
-다운타임 약 5–10분.
+단계 5의 첫 deploy가 \`main-api --migrate-only\`를 실행해 빈 \`hybrid\` DB에 모든 마이그레이션을 적용합니다 (\`00001_init.sql\` ~ \`00005_phase2_teams.sql\`). 별도 데이터 이전 단계 없음.
 
-```bash
-# h20a에서 dump
-ssh h20a "docker exec hybrid-postgres pg_dump -U hybrid hybrid | gzip" > hybrid-cutover.sql.gz
-
-# main-api VM으로 전송
-scp hybrid-cutover.sql.gz hybrid@hybrid-main-api.exe.xyz:~/
-
-# main-api VM에서 restore (테이블 비어있는 상태에서)
-ssh hybrid@hybrid-main-api.exe.xyz "
-  set -e
-  gunzip -c ~/hybrid-cutover.sql.gz | psql -U hybrid -d hybrid
-"
-
-# 무결성 확인 (사용자 / 노드 / 인스턴스 행 수)
-ssh hybrid@hybrid-main-api.exe.xyz \
-  "psql -U hybrid -d hybrid -c \"select count(*) from users; select count(*) from nodes; select count(*) from instances;\""
-```
-
-복원 후 main-api 재시작 (env file 변경 없으면 자동, 안전을 위해 명시):
+확인 (선택):
 ```bash
 ssh hybrid@hybrid-main-api.exe.xyz \
-  "systemctl --user restart hybrid-main-api hybrid-frontend"
+  "psql -U hybrid -d hybrid -c '\dt'"
+# 기대: users, sessions, zones, nodes, gpu_profiles, gpu_slots,
+#       instances, instance_events, credits, credit_ledger, ssh_keys,
+#       node_tokens, teams, team_members, goose_db_version
+
+ssh hybrid@hybrid-main-api.exe.xyz \
+  "psql -U hybrid -d hybrid -c 'select count(*) from users'"
+# 기대: 0
 ```
+
+### 6.1 첫 admin 사용자 시드
+
+DB가 비었으므로 admin 계정도 없습니다. dashboard 등록 후 SQL로 admin 권한 부여:
+
+```bash
+# 1. 브라우저에서 https://qlaud.net/register (단계 7 이후 가능)
+#    또는 단계 7 전에 임시 호스트 헤더로 등록:
+curl --resolve qlaud.net:443:<main-api VM public IP> \
+    -X POST https://qlaud.net/api/v1/auth/register \
+    -H 'Content-Type: application/json' \
+    -d '{"email":"ops@qlaud.net","password":"<10자 이상 임시 비번>"}'
+
+# 2. SQL로 is_admin=true 토글
+ssh hybrid@hybrid-main-api.exe.xyz \
+    "psql -U hybrid -d hybrid -c \"update users set is_admin = true where email = 'ops@qlaud.net'\""
+```
+
+### 6.2 default zone 시드 확인
+
+\`00001_init.sql\`의 마지막 \`insert into zones\` 가 \`dc-seoul-1\` 기본 zone을 자동 생성. 확인:
+```bash
+ssh hybrid@hybrid-main-api.exe.xyz \
+    "psql -U hybrid -d hybrid -c 'select name, is_default from zones'"
+# 기대: dc-seoul-1, t
+```
+
+이후 단계 9에서 h20a compute-agent가 재기동되면 자동으로 nodes 행이 생성됩니다.
 
 ## 7. DNS 전환
 
@@ -288,21 +307,49 @@ ssh h20a "
 - [ ] Postgres backup이 main-api VM에서 매일 정상 (cron 아직 설정 안 했으면 추가)
 - [ ] DNS TTL 600s로 복원 (운영 안정 확인 후)
 
-## 롤백 (단계 7 이후)
+## 롤백
 
-DNS만 h20a IP로 되돌리면 사용자 트래픽이 옛 환경으로 돌아갑니다. 단, 단계 6의 DB가 분기되어 있으므로:
+DB 초기화 컷오버는 새 VM 쪽 데이터가 fresh start이므로 **DB 백업/복원 분기 자체가 없음** — DNS만 되돌리면 즉시 옛 환경으로 복귀합니다.
 
-| 시점 | 가능한 롤백 |
+| 시점 | 롤백 비용 |
 |---|---|
-| 단계 5–6 완료 직후, DNS 전환 전 | Postgres/Caddy 변경 안 한 상태 → DNS 안 건드림. 새 VM은 idle |
-| 단계 7 후, 단계 9 전 | DNS만 되돌림 → 사용자는 h20a 보지만 새 VM의 Postgres엔 dump 직후 데이터 그대로 |
-| 단계 9 후 | DNS 되돌리고 compute-agent endpoint도 되돌림. 그동안 새 VM에 들어온 변경사항은 손실 (dashboard 로그인 등 — 베타 외부 사용자 0이라 영향 0) |
-| 단계 10 후 | h20a 서비스 다시 enable + start 필요. 시간 소요 ~10분 |
+| 단계 5 후, DNS 전환 전 | 새 VM은 idle. DNS 안 건드리면 위험 0 |
+| 단계 7 후, 단계 9 전 | DNS만 되돌림. 그동안 새 DB에 등록한 admin 계정 등은 손실 (베타 사용자 0이라 영향 0) |
+| 단계 9 후 | DNS + compute-agent endpoint 둘 다 되돌림. 옛 h20a Postgres가 살아있으면 그대로 복귀 |
+| 단계 10 후 | h20a 서비스 다시 enable + start 필요. ~10분 소요 |
 
-베타 사용자 0이라 단계 9까지 롤백은 비교적 자유롭습니다.
+h20a Postgres 데이터는 단계 11까지 폐기하지 않고 보존 — 만약 단계 9-10 후에도 옛 데이터를 복구해야 하면 \`docker start hybrid-postgres\` 한 번이면 됩니다.
 
 ## 향후
 
 - preflight.sh refactor (현재 h20a 전용 — role-aware로) — Phase 2.4 들어가기 전 권장
 - Postgres backup 원격 사본 (S3 등) 자동화
 - Caddy 갱신 모니터링 (h20a에서는 events hook로 ssh-proxy reload — 새 환경은 certbot이 자체 cron 사용)
+
+---
+
+## 부록: 데이터 보존 컷오버 (variant: data-preserving cutover) {#variant-data-preserving-cutover}
+
+기본 런북은 DB를 초기화하지만, 데이터 보존이 필요하면 단계 6을 다음으로 교체:
+
+```bash
+# 1. h20a에서 dump (다운타임 시작 — h20a main-api 정지 후)
+ssh h20a "systemctl --user stop hybrid-main-api"
+ssh h20a "docker exec hybrid-postgres pg_dump -U hybrid -F c hybrid" > hybrid-cutover.dump
+
+# 2. main-api VM으로 전송
+scp hybrid-cutover.dump hybrid@hybrid-main-api.exe.xyz:~/
+
+# 3. 새 VM에서 restore. 첫 deploy의 --migrate-only 가 schema를 이미
+#    만들어 둔 상태이므로 데이터만 채우려면 --data-only 사용:
+ssh hybrid@hybrid-main-api.exe.xyz "
+  set -e
+  pg_restore -U hybrid -d hybrid --data-only --disable-triggers ~/hybrid-cutover.dump
+"
+
+# 4. 무결성 확인
+ssh hybrid@hybrid-main-api.exe.xyz \
+  "psql -U hybrid -d hybrid -c \"select count(*) from users; select count(*) from nodes; select count(*) from instances;\""
+```
+
+이 변형을 쓰면 다운타임이 5–10분으로 늘어납니다. 단계 6.1의 admin 시드는 건너뛰세요 (기존 admin이 dump에 포함됨).
