@@ -167,7 +167,7 @@ Phase 1 SSH 프록시의 데이터 평면을 **agent → ssh-proxy yamux/TLS 채
 > 목표: agent ↔ ssh-proxy 사이에 yamux/TLS 데이터 채널이 attach되고 keepalive가 유지된다. **아직 사용자 SSH 트래픽은 안 흐름** — 채널만.
 
 #### Task 1.1: ssh-proxy `muxserver` — TLS listener + 인증
-**Description:** ssh-proxy의 mux endpoint(`mux.qlaud.net:443`, P11 결정)에서 TLS 1.3 리스닝. agent가 연결하면 헤더 한 줄(JSON: `{node_id, token, agent_version}`)을 받아 main-api `/internal/agent-auth`에 검증 위임. 성공 시 yamux Server 세션 시작.
+**Description:** ssh-proxy의 mux endpoint(`mux.qlaud.net:8443`, P11 결정)에서 TLS 1.3 리스닝. agent가 연결하면 헤더 한 줄(JSON: `{node_id, token, agent_version}`)을 받아 main-api `/internal/agent-auth`에 검증 위임. 성공 시 yamux Server 세션 시작.
 
 **P10 결정 (2026-04-27) — yamux Config 공통값** (muxserver·muxclient 양쪽 동일):
 ```go
@@ -182,10 +182,11 @@ yamux.Config{
 }
 ```
 
-**P11 결정 (2026-04-27) — mux endpoint:** `mux.qlaud.net:443`. PR 머지 전 운영 측 준비:
+**P11 결정 (2026-04-27, 갱신 2026-04-27 PM):** mux endpoint = `mux.qlaud.net:8443`. 초기 결정의 `:443`은 Caddy(웹 사이트)가 이미 점유하고 있어 충돌 — 옵션 (b) "ssh-proxy를 별도 외부 포트(:8443)" 채택. 옵션 (a) Caddy L4 SNI 라우팅 대비 운영 단순함 우선 (Caddy 재빌드 불필요). PR 머지 전 운영 측 준비:
 - [ ] DNS A 레코드 `mux.qlaud.net` → ssh-proxy 호스트 IP
-- [ ] TLS cert (`*.qlaud.net` wildcard 또는 mux SAN) ssh-proxy 호스트에 배포
-- [ ] LB/방화벽 inbound 0.0.0.0/0 → ssh-proxy:443 allow
+- [ ] TLS cert (`*.qlaud.net` wildcard) Caddy가 발급, ssh-proxy는 파일시스템 공유 (caddy 그룹 멤버십)
+- [ ] LB/방화벽 inbound 0.0.0.0/0 → ssh-proxy:8443 allow
+- [ ] Phase 2.3 Task 3.3 precheck 스크립트가 `nc -zv mux.qlaud.net 8443` 검증 추가 — 사무실/대기업망에서 :8443 outbound 차단 가능성 사전 점검
 
 **Acceptance:**
 - [ ] `services/ssh-proxy/internal/muxserver/server.go` — `Serve(ctx, lis, deps)` 시그니처
@@ -620,7 +621,7 @@ yamux.Config{
 |---|------|---------------|-----------|
 | ~~**P9**~~ | ~~`/internal/agent-auth` 인증 방식~~ — **결정 (2026-04-27): Option A. Phase 1 `MAIN_API_INTERNAL_TOKEN` 재사용.** 단, Task 0.4 착수 전에 `/internal/*` 라우팅이 public 포트 노출 안 됐는지 검증 (미충족 시 Phase 2 안에서 internal 포트 분리 보강) | ~~Task 0.4 전~~ → **닫힘** | ~~0.4~~ |
 | ~~**P10**~~ | ~~yamux 옵션 기본값~~ — **결정 (2026-04-27):** `KeepAliveInterval=15s`, `StreamOpenTimeout=30s`, 나머지(`MaxStreamWindowSize`, `ConnectionWriteTimeout`, `StreamCloseTimeout`, `AcceptBacklog`)는 yamux 디폴트. Phase 2.4 N5/N2 측정 후 필요시 조정 | ~~Task 1.1 전~~ → **닫힘** | ~~1.1~~ |
-| ~~**P11**~~ | ~~mux endpoint 포트·도메인~~ — **결정 (2026-04-27):** `mux.qlaud.net:443`. 운영 도메인은 `qlaud.net` (Phase 1 spec의 `hybrid-cloud.com`은 placeholder). Task 1.1 PR 머지 전 운영 측 준비물: (a) DNS A 레코드 → ssh-proxy 호스트, (b) `*.qlaud.net` 또는 SAN cert, (c) ssh-proxy 호스트:443 inbound allow | ~~Task 1.1 전~~ → **닫힘** | ~~1.1~~ |
+| ~~**P11**~~ | ~~mux endpoint 포트·도메인~~ — **결정 (2026-04-27, 갱신 PM): `mux.qlaud.net:8443`.** Caddy가 :443 점유하므로 ssh-proxy는 별도 외부 포트(:8443) 채택. Caddy L4 SNI 라우팅(option a)도 검토했으나 caddy-l4 모듈 빌드 필요해 운영 단순함 우선. 운영 측 준비물: (a) DNS A 레코드 `mux.qlaud.net` → ssh-proxy 호스트, (b) Caddy의 `*.qlaud.net` wildcard cert 파일시스템 공유 (caddy 그룹), (c) ssh-proxy 호스트:8443 inbound allow, (d) Phase 2.3 Task 3.3 precheck에 `nc -zv mux.qlaud.net 8443` 추가 (사무실/대기업망 outbound 차단 사전 점검) | ~~Task 1.1 전~~ → **닫힘** | ~~1.1~~ |
 | **P12** | 베타 파트너 1번 후보 — 누구, 언제 컨택 | Phase 2.5 시작 전 | 5.1 |
 | **P13** | precheck 스크립트가 NVIDIA driver 버전 어디까지 강제 | Task 3.3 전 | 3.3 |
 | **P14** | force stop 시 사용자 인스턴스 데이터 보존 정책 — 디스크 이미지 보존 vs 즉시 삭제 | Task 4.2 전 | 4.2 |
