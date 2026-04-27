@@ -121,7 +121,103 @@ The deploy key should be dedicated to CD (not your personal key). Consider
 restricting it on h20a with `command=`/`from=` in `authorized_keys` if the
 deploy user has shell access for other purposes.
 
-### 6. GitHub Environment (recommended)
+### 6. TLS edge (Caddy + Route53 DNS-01)
+
+`main-api` (`:8080`) and the frontend (`:3000`) speak plain HTTP on loopback;
+TLS termination + reverse proxy lives in Caddy on the host. h20a's firewall
+geo-blocks foreign IPs on `:80`/`:443`, so HTTP-01 / TLS-ALPN-01 cannot
+complete — Let's Encrypt validators come from rotating non-KR vantage points.
+We use the **DNS-01** challenge against Route53 (where `qlaud.net` is hosted),
+which only needs outbound HTTPS to the AWS API and is unaffected by the
+inbound geo-fence.
+
+#### One-time install
+
+1. **Build a Caddy with the route53 plugin.** The apt-shipped `/usr/bin/caddy`
+   has no DNS plugins. Build a parallel binary in `/usr/local/bin/caddy` and
+   leave the apt package alone (so apt upgrades don't fight us):
+   ```bash
+   sudo apt install -y golang-go
+   go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
+   ~/go/bin/xcaddy build \
+     --with github.com/caddy-dns/route53 \
+     --output /tmp/caddy
+   sudo install -m 0755 -o root -g root /tmp/caddy /usr/local/bin/caddy
+   /usr/local/bin/caddy list-modules | grep route53   # sanity check
+   ```
+
+2. **Drop the repo Caddyfile and systemd override into place.** From a
+   `~/hybrid-cloud-src` checkout:
+   ```bash
+   sudo install -m 0644 -o root -g root infra/caddy/Caddyfile /etc/caddy/Caddyfile
+   sudo mkdir -p /etc/systemd/system/caddy.service.d
+   sudo install -m 0644 -o root -g root \
+     infra/caddy/caddy.service.d/override.conf \
+     /etc/systemd/system/caddy.service.d/override.conf
+   sudo systemctl daemon-reload
+   ```
+
+3. **Create an IAM user for the ACME client** with the policy in
+   `infra/caddy/route53-policy.json` (replace the zone ID placeholder with
+   the qlaud.net hosted zone ID). Issue a long-lived access key for that
+   user — Caddy needs it persistently for renewals.
+
+4. **Inject the credentials**:
+   ```bash
+   sudo install -m 0600 -o root -g root /dev/stdin /etc/caddy/caddy.env <<'EOF'
+   AWS_ACCESS_KEY_ID=AKIA...
+   AWS_SECRET_ACCESS_KEY=...
+   AWS_REGION=us-east-1
+   EOF
+   ```
+
+5. **Restart and watch the first issuance**:
+   ```bash
+   sudo systemctl restart caddy
+   sudo journalctl -u caddy -f
+   # expect "certificate obtained successfully" within ~60s
+   sudo ls /var/lib/caddy/.local/share/caddy/certificates/acme-v02.api.letsencrypt.org-directory/qlaud.net/
+   ```
+
+6. **Verify externally** (from any KR network):
+   ```bash
+   curl -sI https://qlaud.net/login | head -1   # expect HTTP/2 200
+   curl -s -o /dev/null -w '%{http_code}\n' https://qlaud.net/api/v1/instances   # expect 401
+   openssl s_client -connect qlaud.net:443 -servername qlaud.net </dev/null 2>/dev/null \
+     | openssl x509 -noout -issuer -dates
+   ```
+
+#### Renewal
+
+Caddy renews automatically (~30 days before expiry) using the same Route53
+credentials. No cron, no manual intervention. To verify the next renewal
+date:
+```bash
+curl -s localhost:2019/pki/ca/local/certificates 2>/dev/null   # admin API (loopback)
+sudo journalctl -u caddy --since '7 days ago' | grep -iE 'renew|obtain'
+```
+
+#### Backup
+
+The `/var/lib/caddy/` tree contains the LE account key and certificate
+material. Back it up alongside the Postgres backups so a host rebuild
+doesn't force a fresh ACME account / re-issuance:
+```bash
+sudo tar -C / -czf caddy-state.tgz var/lib/caddy
+```
+
+#### Rollback
+
+If a Caddyfile change breaks routing, the apt binary at `/usr/bin/caddy`
+plus the previous Caddyfile are still on disk. Either:
+- `sudo systemctl edit caddy --force` and revert the override (drops back to
+  apt binary + previous /etc/caddy/Caddyfile), or
+- restore the prior `/etc/caddy/Caddyfile` and `sudo systemctl reload caddy`.
+
+The certificate state under `/var/lib/caddy/` is unaffected by Caddyfile
+edits — restarts/reloads do not re-issue.
+
+### 7. GitHub Environment (recommended)
 
 Create a `production` environment under **Settings → Environments** with at
 least one required reviewer. The deploy job already references
