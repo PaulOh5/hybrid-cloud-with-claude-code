@@ -62,3 +62,21 @@ func TestAdd_RejectsEmptyLabel(t *testing.T) {
 		t.Fatalf("expected ErrInvalidPubkey, got %v", err)
 	}
 }
+
+func TestNormalizeFingerprint(t *testing.T) {
+	t.Parallel()
+	// ssh.FingerprintSHA256 emits "SHA256:<base64>"; the DB stores "<base64>".
+	// Both must reduce to the stored form so ssh-proxy lookups succeed.
+	cases := []struct{ in, want string }{
+		{"SHA256:abc", "abc"},
+		{"abc", "abc"},
+		{"", ""},
+		{"SHA256:", ""},
+		{"sha256:abc", "sha256:abc"}, // case-sensitive on purpose
+	}
+	for _, c := range cases {
+		if got := normalizeFingerprint(c.in); got != c.want {
+			t.Errorf("normalizeFingerprint(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}

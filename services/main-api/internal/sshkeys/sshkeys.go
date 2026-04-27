@@ -104,8 +104,12 @@ func (r *Repo) Delete(ctx context.Context, userID, id uuid.UUID) error {
 // SSH client to its owning user. Returns ErrNotFound when no key matches.
 // ssh-proxy uses this to authenticate the user before issuing a tunnel
 // ticket.
+//
+// Accepts either the raw "<base64>" form (how Fingerprint stores it) or the
+// OpenSSH-canonical "SHA256:<base64>" form that ssh.FingerprintSHA256 emits;
+// the prefix is stripped before the DB lookup.
 func (r *Repo) LookupUserByFingerprint(ctx context.Context, fingerprint string) (uuid.UUID, error) {
-	row, err := r.q.LookupSSHKeyByFingerprint(ctx, fingerprint)
+	row, err := r.q.LookupSSHKeyByFingerprint(ctx, normalizeFingerprint(fingerprint))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return uuid.Nil, ErrNotFound
@@ -136,4 +140,10 @@ func (r *Repo) PubkeysForUser(ctx context.Context, userID uuid.UUID) ([]string, 
 func Fingerprint(key ssh.PublicKey) string {
 	sum := sha256.Sum256(key.Marshal())
 	return base64.RawStdEncoding.EncodeToString(sum[:])
+}
+
+// normalizeFingerprint strips the OpenSSH "SHA256:" prefix (emitted by
+// ssh.FingerprintSHA256) so callers can pass either form.
+func normalizeFingerprint(s string) string {
+	return strings.TrimPrefix(s, "SHA256:")
 }
