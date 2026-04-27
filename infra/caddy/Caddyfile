@@ -1,0 +1,19 @@
+{
+	email ops@qlaud.net
+
+	# DNS-01 challenge via Route53. h20a's firewall blocks foreign IPs on
+	# :80/:443, so HTTP-01 / TLS-ALPN-01 cannot complete — Let's Encrypt's
+	# validators come from rotating non-KR vantage points and are not
+	# allow-listable. DNS-01 only needs outbound HTTPS to the Route53 API.
+	acme_dns route53 {
+		max_retries 5
+	}
+}
+
+qlaud.net, www.qlaud.net {
+	encode zstd gzip
+
+	# Frontend (Next.js standalone) handles all paths and rewrites
+	# /api/v1/* to main-api internally — see web/frontend/next.config.ts.
+	reverse_proxy 127.0.0.1:3000
+}
