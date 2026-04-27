@@ -19,12 +19,16 @@ import (
 
 // Ticket is the signed payload.
 type Ticket struct {
-	SessionID      string    `json:"session_id"`
-	InstanceID     uuid.UUID `json:"instance_id"`
-	NodeID         uuid.UUID `json:"node_id"`
-	VMInternalIP   string    `json:"vm_internal_ip"`
-	VMPort         uint16    `json:"vm_port"`
-	TunnelEndpoint string    `json:"tunnel_endpoint"` // host:port the proxy dials
+	SessionID    string    `json:"session_id"`
+	InstanceID   uuid.UUID `json:"instance_id"`
+	NodeID       uuid.UUID `json:"node_id"`
+	VMInternalIP string    `json:"vm_internal_ip"`
+	VMPort       uint16    `json:"vm_port"`
+	// Deprecated: Phase 2 (ADR-012). ssh-proxy now reaches the agent via
+	// its mux session keyed by NodeID; this field is always emitted as
+	// the empty string. Kept in the JSON shape for v1.x verifier
+	// compatibility — remove in Phase 3 once no consumer reads it.
+	TunnelEndpoint string    `json:"tunnel_endpoint"`
 	ExpiresAt      time.Time `json:"expires_at"`
 }
 
