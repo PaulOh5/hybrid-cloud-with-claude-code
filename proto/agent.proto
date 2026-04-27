@@ -32,11 +32,21 @@ message Register {
   // Auth token proving the agent may register under this node_name.
   string agent_token = 4;
   Topology topology = 5;
-  // Phase 6: TCP endpoint (host:port) ssh-proxy should dial to tunnel raw
-  // SSH bytes to this node's VMs. Advertised by the agent so main-api can
-  // issue tickets pointing to it. For MVP co-located deployments this is
-  // usually 127.0.0.1:<port>; production may be a LAN address.
+  // Phase 2 (ADR-012): semantic flip. Previously "TCP endpoint ssh-proxy
+  // should dial to reach this node's VMs". Now the ssh-proxy mux endpoint
+  // advertised back to the agent is irrelevant on Register — agent learns
+  // it from config — so this field is reserved for the agent's mux session
+  // identifier reported back after the agent attaches its yamux/TLS data
+  // plane to ssh-proxy. Kept at field 6 because Phase 1 has zero external
+  // users; wire-level breaking change is acceptable.
+  // TODO(Phase 2.2): remove old usage sites that still treat this as a
+  // dial address and replace with mux session reporting.
   string agent_tunnel_endpoint = 6;
+  // Phase 2 (Task 0.2). Optional. Populated by the agent on a re-Register
+  // *after* its data plane has attached to ssh-proxy and the agent learned
+  // its session id. main-api persists this for operator visibility only —
+  // routing decisions still go through ssh-proxy's muxregistry.
+  string mux_session_id = 7;
 }
 
 message Heartbeat {
@@ -45,6 +55,10 @@ message Heartbeat {
   int32 active_instance_count = 3;
   double cpu_load_1m = 4;
   uint64 mem_free_bytes = 5;
+  // Phase 2 (Task 0.2). Running agent version, repeated each heartbeat so
+  // operator dashboards (Phase 2 O2) can see version drift across the fleet
+  // without waiting for the next Register.
+  string agent_version = 6;
 }
 
 // Topology is the physical layout of GPU resources on the node. Reported at

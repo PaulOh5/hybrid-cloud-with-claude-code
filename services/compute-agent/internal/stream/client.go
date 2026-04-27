@@ -32,6 +32,10 @@ type Config struct {
 	// TunnelEndpoint is the host:port ssh-proxy should dial to open raw SSH
 	// tunnels to VMs on this node. Advertised in Register so main-api can
 	// embed it in tickets. Empty means the node opts out of SSH routing.
+	//
+	// TODO(Phase 2.2): remove. Replaced by muxclient (yamux/TLS outbound to
+	// ssh-proxy) under ADR-008/012. Phase 2.0 leaves the field in place to
+	// keep Phase 1 compile and runtime intact while data plane is migrated.
 	TunnelEndpoint string
 
 	// Topology is consulted on each Register — hot-swap support is Phase 4+.
