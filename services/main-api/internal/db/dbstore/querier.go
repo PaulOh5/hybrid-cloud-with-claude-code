@@ -41,6 +41,8 @@ type Querier interface {
 	InsertCreditLedgerEntry(ctx context.Context, arg InsertCreditLedgerEntryParams) (CreditLedger, error)
 	InsertInstanceEvent(ctx context.Context, arg InsertInstanceEventParams) error
 	InsertSlot(ctx context.Context, arg InsertSlotParams) (GpuSlot, error)
+	// Used by the ACL helper. Single boolean keeps the code path narrow.
+	IsUserInTeam(ctx context.Context, arg IsUserInTeamParams) (bool, error)
 	// Used by the agentauth handler (Task 0.4). Returns the bcrypt hashes the
 	// handler bcrypt-compares the presented plaintext token against. Filtering
 	// revoked rows in SQL keeps a just-revoked credential out of the loop the
@@ -60,6 +62,10 @@ type Querier interface {
 	// Admin CLI (Task 3.2) listing — both active and revoked, newest first.
 	ListNodeTokens(ctx context.Context, nodeID uuid.UUID) ([]NodeToken, error)
 	ListNodes(ctx context.Context) ([]Node, error)
+	// Phase 2.3 (Task 3.1) — public nodes plus owner_team nodes whose owner
+	// team contains the user. Used by /api/v1/nodes so beta nodes never
+	// enumerate to non-members (S3 enumerate prevention pattern).
+	ListNodesAccessibleToUser(ctx context.Context, userID uuid.UUID) ([]Node, error)
 	// Counterpart to MarkStaleNodesOfflineReturning — every instance on a
 	// newly-offline node whose state is still pending/provisioning/running
 	// needs to be flipped to failed so its slot is released.
@@ -122,6 +128,19 @@ type Querier interface {
 	// breaking LIMIT and over-reserving slots. PostgreSQL materialises CTEs that
 	// perform FOR UPDATE / UPDATE, so LIMIT $3 actually holds.
 	ReserveFreeSlots(ctx context.Context, arg ReserveFreeSlotsParams) ([]GpuSlot, error)
+	// Phase 2.3 (Task 3.1) — team membership queries used by the ACL helper
+	// and the admin CLI (Task 3.2).
+	TeamCreate(ctx context.Context, arg TeamCreateParams) (Team, error)
+	TeamGet(ctx context.Context, id uuid.UUID) (Team, error)
+	TeamGetByName(ctx context.Context, name string) (Team, error)
+	// Used by the node-list ACL filter to keep the SQL inline-friendly.
+	TeamIDsForUser(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error)
+	TeamList(ctx context.Context) ([]Team, error)
+	// Idempotent — re-adding a member is a no-op so the admin CLI can be
+	// invoked safely from runbooks without a "is this already a member" probe.
+	TeamMemberAdd(ctx context.Context, arg TeamMemberAddParams) error
+	TeamMemberRemove(ctx context.Context, arg TeamMemberRemoveParams) error
+	TeamMembersForTeam(ctx context.Context, teamID uuid.UUID) ([]TeamMembersForTeamRow, error)
 	TouchNodeHeartbeat(ctx context.Context, id uuid.UUID) error
 	UpdateInstanceState(ctx context.Context, arg UpdateInstanceStateParams) (Instance, error)
 	UpdateNodeProfileHash(ctx context.Context, arg UpdateNodeProfileHashParams) error

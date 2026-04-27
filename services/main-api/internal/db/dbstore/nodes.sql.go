@@ -123,6 +123,58 @@ func (q *Queries) ListNodes(ctx context.Context) ([]Node, error) {
 	return items, nil
 }
 
+const listNodesAccessibleToUser = `-- name: ListNodesAccessibleToUser :many
+select id, zone_id, node_name, hostname, agent_version, status, topology_json, profile_hash, last_heartbeat_at, registered_at, updated_at, access_policy, owner_team_id, last_data_plane_at, node_state from nodes
+where access_policy = 'public'
+   or (
+       access_policy  = 'owner_team'
+       and owner_team_id is not null
+       and owner_team_id in (
+           select team_id from team_members where user_id = $1
+       )
+   )
+order by node_name
+`
+
+// Phase 2.3 (Task 3.1) — public nodes plus owner_team nodes whose owner
+// team contains the user. Used by /api/v1/nodes so beta nodes never
+// enumerate to non-members (S3 enumerate prevention pattern).
+func (q *Queries) ListNodesAccessibleToUser(ctx context.Context, userID uuid.UUID) ([]Node, error) {
+	rows, err := q.db.Query(ctx, listNodesAccessibleToUser, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Node{}
+	for rows.Next() {
+		var i Node
+		if err := rows.Scan(
+			&i.ID,
+			&i.ZoneID,
+			&i.NodeName,
+			&i.Hostname,
+			&i.AgentVersion,
+			&i.Status,
+			&i.TopologyJson,
+			&i.ProfileHash,
+			&i.LastHeartbeatAt,
+			&i.RegisteredAt,
+			&i.UpdatedAt,
+			&i.AccessPolicy,
+			&i.OwnerTeamID,
+			&i.LastDataPlaneAt,
+			&i.NodeState,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listNonTerminalInstancesForNode = `-- name: ListNonTerminalInstancesForNode :many
 select id, state
 from instances

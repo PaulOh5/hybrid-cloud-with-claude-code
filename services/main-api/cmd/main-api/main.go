@@ -137,6 +137,9 @@ func main() {
 		BalanceForOwner: func(ctx context.Context, ownerID uuid.UUID) (int64, error) {
 			return creditRepo.Balance(ctx, ownerID)
 		},
+		// Phase 2.3 ACL — only the user-facing CreateForOwner path
+		// consults this; admin Create bypasses the gate by design.
+		TeamMembership: teamMembershipAdapter{q: queries},
 	}
 	adminCredits := &api.AdminCreditHandlers{Credits: creditRepo}
 	adminRouter := api.NewAdminRouter(
@@ -352,4 +355,16 @@ func startMetricsRefresher(
 			log.Error("metrics refresher", "err", err)
 		}
 	}()
+}
+
+// teamMembershipAdapter wraps dbstore.Queries to satisfy
+// api.TeamMembership. The interface is one method; the adapter exists
+// only because dbstore's IsUserInTeam takes a struct param.
+type teamMembershipAdapter struct{ q *dbstore.Queries }
+
+func (a teamMembershipAdapter) IsUserInTeam(ctx context.Context, userID, teamID uuid.UUID) (bool, error) {
+	return a.q.IsUserInTeam(ctx, dbstore.IsUserInTeamParams{
+		UserID: userID,
+		TeamID: teamID,
+	})
 }

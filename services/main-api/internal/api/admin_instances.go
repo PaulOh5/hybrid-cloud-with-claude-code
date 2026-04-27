@@ -50,6 +50,13 @@ type SlotRepo interface {
 	ReleaseForInstance(ctx context.Context, instanceID uuid.UUID) (int64, error)
 }
 
+// TeamMembership is the slice the handler uses to enforce Phase 2.3 ACL
+// on the user-facing create path. Returns true when userID belongs to
+// teamID. Nil disables the gate (admin path).
+type TeamMembership interface {
+	IsUserInTeam(ctx context.Context, userID, teamID uuid.UUID) (bool, error)
+}
+
 // InstanceHandlers wires the admin instance endpoints.
 type InstanceHandlers struct {
 	Instances  InstanceRepo
@@ -66,6 +73,10 @@ type InstanceHandlers struct {
 	// whose balance has run out (402). Nil means the gate is disabled —
 	// admin-created instances bypass the gate by definition.
 	BalanceForOwner func(ctx context.Context, ownerID uuid.UUID) (int64, error)
+	// TeamMembership enforces Phase 2.3 ACL on owner_team nodes. Nil on
+	// the admin Create path; non-nil on CreateForOwner. ACL violation
+	// returns 404 to avoid leaking node existence to non-members.
+	TeamMembership TeamMembership
 }
 
 // NodeGetter is the slice of node.Repo this handler depends on.
@@ -152,6 +163,25 @@ func (h *InstanceHandlers) CreateForOwner(w http.ResponseWriter, r *http.Request
 	if httpCode != 0 {
 		writeError(w, httpCode, errCode, errMsg)
 		return
+	}
+	// Phase 2.3 ACL — owner_team node access is gated to team members.
+	// Returns 404 (not 403) so a non-member probing for instance creation
+	// cannot distinguish "node exists but I'm not authorised" from
+	// "node does not exist" (S3 enumerate prevention).
+	if h.TeamMembership != nil && node.AccessPolicy == "owner_team" {
+		allowed := false
+		if node.OwnerTeamID.Valid {
+			ok, err := h.TeamMembership.IsUserInTeam(r.Context(), ownerID, node.OwnerTeamID.UUID)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "membership_lookup", err.Error())
+				return
+			}
+			allowed = ok
+		}
+		if !allowed {
+			writeError(w, http.StatusNotFound, "node_not_found", "node not found")
+			return
+		}
 	}
 	if h.BalanceForOwner != nil {
 		balance, err := h.BalanceForOwner(r.Context(), ownerID)
