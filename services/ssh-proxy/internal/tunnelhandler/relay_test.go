@@ -7,7 +7,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -249,29 +248,3 @@ func TestRelay_RejectsBadPayload(t *testing.T) {
 		t.Fatal("expected decode error")
 	}
 }
-
-// Smoke-check that the legacy Relay function still exists for v1.x callers
-// that haven't migrated yet — it should now be a thin wrapper that returns
-// an error explaining the migration path. Once Phase 2.4 fully removes the
-// Phase 1 path this test goes away too.
-func TestLegacyRelayFunctionReturnsMigrationError(t *testing.T) {
-	t.Parallel()
-
-	if tunnelhandler.Relay == nil {
-		// Acceptable: the symbol may have been removed already. Skip.
-		t.Skip("legacy Relay removed")
-	}
-	signed := makeSigned(t, map[string]any{"node_id": uuid.New().String()})
-	_, server := net.Pipe()
-	ch := &pipeChannel{Conn: server}
-
-	err := tunnelhandler.Relay(context.Background(), "x", signed, ch)
-	if err == nil {
-		t.Fatal("expected legacy Relay to return migration error")
-	}
-}
-
-// Helper: a quoting print so failing tests show full body bytes.
-func dumpBytes(b []byte) string { return fmt.Sprintf("%q", b) }
-
-var _ = dumpBytes

@@ -175,14 +175,3 @@ func (r *Relayer) log() *slog.Logger {
 	}
 	return slog.Default()
 }
-
-// Relay is the Phase 1 free-function entry point. It now returns an error
-// explaining the migration so any forgotten wiring (a *Handler.AfterTicket
-// pointing at this symbol instead of (*Relayer).Relay) fails loudly at
-// runtime instead of silently routing nowhere. Phase 2.4 deletes this.
-//
-// Deprecated: wire (*Relayer).Relay instead.
-var Relay = func(_ context.Context, _ string, _ ticketclient.Signed, ch ssh.Channel) error {
-	_ = ch.Close()
-	return errors.New("tunnelhandler.Relay: deprecated free function; wire (*Relayer).Relay (Phase 2.2)")
-}
