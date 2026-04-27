@@ -218,13 +218,23 @@ type Register struct {
 	// Auth token proving the agent may register under this node_name.
 	AgentToken string    `protobuf:"bytes,4,opt,name=agent_token,json=agentToken,proto3" json:"agent_token,omitempty"`
 	Topology   *Topology `protobuf:"bytes,5,opt,name=topology,proto3" json:"topology,omitempty"`
-	// Phase 6: TCP endpoint (host:port) ssh-proxy should dial to tunnel raw
-	// SSH bytes to this node's VMs. Advertised by the agent so main-api can
-	// issue tickets pointing to it. For MVP co-located deployments this is
-	// usually 127.0.0.1:<port>; production may be a LAN address.
+	// Phase 2 (ADR-012): semantic flip. Previously "TCP endpoint ssh-proxy
+	// should dial to reach this node's VMs". Now the ssh-proxy mux endpoint
+	// advertised back to the agent is irrelevant on Register — agent learns
+	// it from config — so this field is reserved for the agent's mux session
+	// identifier reported back after the agent attaches its yamux/TLS data
+	// plane to ssh-proxy. Kept at field 6 because Phase 1 has zero external
+	// users; wire-level breaking change is acceptable.
+	// TODO(Phase 2.2): remove old usage sites that still treat this as a
+	// dial address and replace with mux session reporting.
 	AgentTunnelEndpoint string `protobuf:"bytes,6,opt,name=agent_tunnel_endpoint,json=agentTunnelEndpoint,proto3" json:"agent_tunnel_endpoint,omitempty"`
-	unknownFields       protoimpl.UnknownFields
-	sizeCache           protoimpl.SizeCache
+	// Phase 2 (Task 0.2). Optional. Populated by the agent on a re-Register
+	// *after* its data plane has attached to ssh-proxy and the agent learned
+	// its session id. main-api persists this for operator visibility only —
+	// routing decisions still go through ssh-proxy's muxregistry.
+	MuxSessionId  string `protobuf:"bytes,7,opt,name=mux_session_id,json=muxSessionId,proto3" json:"mux_session_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Register) Reset() {
@@ -299,6 +309,13 @@ func (x *Register) GetAgentTunnelEndpoint() string {
 	return ""
 }
 
+func (x *Register) GetMuxSessionId() string {
+	if x != nil {
+		return x.MuxSessionId
+	}
+	return ""
+}
+
 type Heartbeat struct {
 	state               protoimpl.MessageState `protogen:"open.v1"`
 	NodeId              string                 `protobuf:"bytes,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
@@ -306,8 +323,12 @@ type Heartbeat struct {
 	ActiveInstanceCount int32                  `protobuf:"varint,3,opt,name=active_instance_count,json=activeInstanceCount,proto3" json:"active_instance_count,omitempty"`
 	CpuLoad_1M          float64                `protobuf:"fixed64,4,opt,name=cpu_load_1m,json=cpuLoad1m,proto3" json:"cpu_load_1m,omitempty"`
 	MemFreeBytes        uint64                 `protobuf:"varint,5,opt,name=mem_free_bytes,json=memFreeBytes,proto3" json:"mem_free_bytes,omitempty"`
-	unknownFields       protoimpl.UnknownFields
-	sizeCache           protoimpl.SizeCache
+	// Phase 2 (Task 0.2). Running agent version, repeated each heartbeat so
+	// operator dashboards (Phase 2 O2) can see version drift across the fleet
+	// without waiting for the next Register.
+	AgentVersion  string `protobuf:"bytes,6,opt,name=agent_version,json=agentVersion,proto3" json:"agent_version,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Heartbeat) Reset() {
@@ -373,6 +394,13 @@ func (x *Heartbeat) GetMemFreeBytes() uint64 {
 		return x.MemFreeBytes
 	}
 	return 0
+}
+
+func (x *Heartbeat) GetAgentVersion() string {
+	if x != nil {
+		return x.AgentVersion
+	}
+	return ""
 }
 
 // Topology is the physical layout of GPU resources on the node. Reported at
@@ -1262,7 +1290,7 @@ const file_agent_proto_rawDesc = "" +
 	"\btopology\x18\x03 \x01(\v2\x1e.hybridcloud.agent.v1.TopologyH\x00R\btopology\x12O\n" +
 	"\x0finstance_status\x18\x04 \x01(\v2$.hybridcloud.agent.v1.InstanceStatusH\x00R\x0einstanceStatus\x12-\n" +
 	"\x03ack\x18\x05 \x01(\v2\x19.hybridcloud.agent.v1.AckH\x00R\x03ackB\t\n" +
-	"\apayload\"\xf9\x01\n" +
+	"\apayload\"\x9f\x02\n" +
 	"\bRegister\x12\x1b\n" +
 	"\tnode_name\x18\x01 \x01(\tR\bnodeName\x12\x1a\n" +
 	"\bhostname\x18\x02 \x01(\tR\bhostname\x12#\n" +
@@ -1270,13 +1298,15 @@ const file_agent_proto_rawDesc = "" +
 	"\vagent_token\x18\x04 \x01(\tR\n" +
 	"agentToken\x12:\n" +
 	"\btopology\x18\x05 \x01(\v2\x1e.hybridcloud.agent.v1.TopologyR\btopology\x122\n" +
-	"\x15agent_tunnel_endpoint\x18\x06 \x01(\tR\x13agentTunnelEndpoint\"\xd3\x01\n" +
+	"\x15agent_tunnel_endpoint\x18\x06 \x01(\tR\x13agentTunnelEndpoint\x12$\n" +
+	"\x0emux_session_id\x18\a \x01(\tR\fmuxSessionId\"\xf8\x01\n" +
 	"\tHeartbeat\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x123\n" +
 	"\asent_at\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\x06sentAt\x122\n" +
 	"\x15active_instance_count\x18\x03 \x01(\x05R\x13activeInstanceCount\x12\x1e\n" +
 	"\vcpu_load_1m\x18\x04 \x01(\x01R\tcpuLoad1m\x12$\n" +
-	"\x0emem_free_bytes\x18\x05 \x01(\x04R\fmemFreeBytes\"\xdc\x01\n" +
+	"\x0emem_free_bytes\x18\x05 \x01(\x04R\fmemFreeBytes\x12#\n" +
+	"\ragent_version\x18\x06 \x01(\tR\fagentVersion\"\xdc\x01\n" +
 	"\bTopology\x12-\n" +
 	"\x04gpus\x18\x01 \x03(\v2\x19.hybridcloud.agent.v1.GpuR\x04gpus\x12C\n" +
 	"\fnvlink_pairs\x18\x02 \x03(\v2 .hybridcloud.agent.v1.NvlinkPairR\vnvlinkPairs\x12#\n" +
