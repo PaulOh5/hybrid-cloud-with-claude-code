@@ -4,6 +4,7 @@ go 1.24.0
 
 require (
 	github.com/digitalocean/go-libvirt v0.0.0-20260217163227-273eaa321819
+	github.com/hashicorp/yamux v0.1.2
 	github.com/kdomanski/iso9660 v0.4.0
 	google.golang.org/grpc v1.80.0
 	google.golang.org/protobuf v1.36.11
