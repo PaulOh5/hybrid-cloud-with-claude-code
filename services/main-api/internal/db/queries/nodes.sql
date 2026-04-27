@@ -62,6 +62,21 @@ where node_id = $1
 -- name: GetDefaultZone :one
 select * from zones where is_default = true limit 1;
 
+-- name: ListNodesAccessibleToUser :many
+-- Phase 2.3 (Task 3.1) — public nodes plus owner_team nodes whose owner
+-- team contains the user. Used by /api/v1/nodes so beta nodes never
+-- enumerate to non-members (S3 enumerate prevention pattern).
+select * from nodes
+where access_policy = 'public'
+   or (
+       access_policy  = 'owner_team'
+       and owner_team_id is not null
+       and owner_team_id in (
+           select team_id from team_members where user_id = $1
+       )
+   )
+order by node_name;
+
 -- name: NodeAccessPolicy :one
 -- Phase 2 (ADR-011). Returns the ACL inputs the scheduler needs to filter
 -- candidate slots and the Phase 2 state machine fields used by the grace

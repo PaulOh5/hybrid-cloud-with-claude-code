@@ -256,6 +256,19 @@ type SshKey struct {
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
+type Team struct {
+	ID          uuid.UUID          `json:"id"`
+	Name        string             `json:"name"`
+	Description string             `json:"description"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
+type TeamMember struct {
+	TeamID   uuid.UUID          `json:"team_id"`
+	UserID   uuid.UUID          `json:"user_id"`
+	JoinedAt pgtype.Timestamptz `json:"joined_at"`
+}
+
 type User struct {
 	ID           uuid.UUID          `json:"id"`
 	Email        string             `json:"email"`

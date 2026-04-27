@@ -24,6 +24,7 @@ build: ## Build all services into bin/
 	@mkdir -p bin
 	go build -o bin/compute-agent ./services/compute-agent/cmd/compute-agent
 	go build -o bin/main-api ./services/main-api/cmd/main-api
+	go build -o bin/admin ./services/main-api/cmd/admin
 	go build -o bin/ssh-proxy ./services/ssh-proxy/cmd/ssh-proxy
 	cd $(FRONTEND_DIR) && pnpm build
 

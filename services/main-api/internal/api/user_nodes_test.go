@@ -14,10 +14,12 @@ import (
 )
 
 type fakeNodeLister struct {
-	rows []dbstore.Node
+	rows         []dbstore.Node
+	calledForUID uuid.UUID
 }
 
-func (f *fakeNodeLister) List(_ context.Context) ([]dbstore.Node, error) {
+func (f *fakeNodeLister) ListAccessibleToUser(_ context.Context, userID uuid.UUID) ([]dbstore.Node, error) {
+	f.calledForUID = userID
 	return f.rows, nil
 }
 

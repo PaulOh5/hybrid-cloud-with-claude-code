@@ -48,6 +48,7 @@ type Queries interface {
 	ListNonTerminalInstancesForNode(ctx context.Context, nodeID uuid.UUID) ([]dbstore.ListNonTerminalInstancesForNodeRow, error)
 	GetNode(ctx context.Context, id uuid.UUID) (dbstore.Node, error)
 	ListNodes(ctx context.Context) ([]dbstore.Node, error)
+	ListNodesAccessibleToUser(ctx context.Context, userID uuid.UUID) ([]dbstore.Node, error)
 	GetDefaultZone(ctx context.Context) (dbstore.Zone, error)
 }
 
@@ -108,6 +109,14 @@ func (r *DBRepo) NonTerminalInstancesForNode(ctx context.Context, nodeID uuid.UU
 // List returns all known nodes.
 func (r *DBRepo) List(ctx context.Context) ([]dbstore.Node, error) {
 	return r.q.ListNodes(ctx)
+}
+
+// ListAccessibleToUser is the ACL-aware variant used by the user-facing
+// dashboard. Phase 2.3 ADR-011 — public nodes plus owner_team nodes
+// whose owner team contains userID. Beta nodes never enumerate to
+// non-members.
+func (r *DBRepo) ListAccessibleToUser(ctx context.Context, userID uuid.UUID) ([]dbstore.Node, error) {
+	return r.q.ListNodesAccessibleToUser(ctx, userID)
 }
 
 // Get returns one node by id.
