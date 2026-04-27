@@ -10,10 +10,26 @@
 	}
 }
 
-qlaud.net, www.qlaud.net {
+# Wildcard + apex: Phase 2 mux.qlaud.net + Phase 3 future subdomains all
+# served from a single cert pair. Wildcard requires DNS-01 (configured in
+# the global block above). The apex needs its own cert because Let's
+# Encrypt wildcards do not cover the parent domain.
+*.qlaud.net, qlaud.net {
 	encode zstd gzip
 
-	# Frontend (Next.js standalone) handles all paths and rewrites
-	# /api/v1/* to main-api internally — see web/frontend/next.config.ts.
-	reverse_proxy 127.0.0.1:3000
+	# Frontend (Next.js standalone) handles all paths for the public app
+	# hostnames and rewrites /api/v1/* to main-api internally — see
+	# web/frontend/next.config.ts.
+	@app host qlaud.net www.qlaud.net
+	handle @app {
+		reverse_proxy 127.0.0.1:3000
+	}
+
+	# Other subdomains (mux.qlaud.net etc.) get the wildcard cert but no
+	# routing yet. Phase 2.1 Task 1.1 wires mux.qlaud.net into ssh-proxy
+	# via an L4 stream forward; until then these return 404 so misrouted
+	# clients fail loudly.
+	handle {
+		respond "service not configured for this hostname" 404
+	}
 }
