@@ -41,6 +41,11 @@ type Querier interface {
 	InsertCreditLedgerEntry(ctx context.Context, arg InsertCreditLedgerEntryParams) (CreditLedger, error)
 	InsertInstanceEvent(ctx context.Context, arg InsertInstanceEventParams) error
 	InsertSlot(ctx context.Context, arg InsertSlotParams) (GpuSlot, error)
+	// Used by the agentauth handler (Task 0.4). Returns the bcrypt hashes the
+	// handler bcrypt-compares the presented plaintext token against. Filtering
+	// revoked rows in SQL keeps a just-revoked credential out of the loop the
+	// moment NodeTokenRevoke runs.
+	ListActiveNodeTokens(ctx context.Context, nodeID uuid.UUID) ([]NodeToken, error)
 	// billing worker가 매 tick에 호출. owner_id 가 null인 admin/test 인스턴스는
 	// 청구 대상에서 제외. updated_at 은 어떤 시점부터 청구할지 계산용 (state
 	// 가 running 으로 바뀐 시각 ~).

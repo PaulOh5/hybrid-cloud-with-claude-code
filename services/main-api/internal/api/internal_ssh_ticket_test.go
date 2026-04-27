@@ -92,7 +92,7 @@ func seedRunningInstance(t *testing.T) (http.Handler, dbstore.Instance, uuid.UUI
 		Registry:  registry,
 		Signer:    signer,
 		SSHKeys:   auth,
-	}, "secret")
+	}, nil, "secret")
 
 	return router, *insts.rows[instanceID], instanceID, ownerID
 }
@@ -225,7 +225,7 @@ func TestSSHTicket_OwnershipIsolation(t *testing.T) {
 
 	r2 := api.NewInternalRouter(api.SSHTicketDeps{
 		Instances: insts, Nodes: getter, Registry: registry, Signer: signer, SSHKeys: auth,
-	}, "secret")
+	}, nil, "secret")
 
 	req := ticketRequest(t, instanceID.String()[:8], testFingerprint2)
 	rr := httptest.NewRecorder()
@@ -271,7 +271,7 @@ func TestSSHTicket_InstanceNotRunning(t *testing.T) {
 
 	router := api.NewInternalRouter(api.SSHTicketDeps{
 		Instances: insts, Nodes: getter, Registry: registry, Signer: signer, SSHKeys: auth,
-	}, "secret")
+	}, nil, "secret")
 
 	req := ticketRequest(t, instanceID.String()[:8], testFingerprint)
 	rr := httptest.NewRecorder()

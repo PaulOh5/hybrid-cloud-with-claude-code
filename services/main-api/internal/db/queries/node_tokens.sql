@@ -29,3 +29,13 @@ select *
 from node_tokens
 where node_id = $1
 order by created_at desc;
+
+-- name: ListActiveNodeTokens :many
+-- Used by the agentauth handler (Task 0.4). Returns the bcrypt hashes the
+-- handler bcrypt-compares the presented plaintext token against. Filtering
+-- revoked rows in SQL keeps a just-revoked credential out of the loop the
+-- moment NodeTokenRevoke runs.
+select *
+from node_tokens
+where node_id    = $1
+  and revoked_at is null;
