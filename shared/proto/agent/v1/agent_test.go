@@ -80,6 +80,51 @@ func TestControlMessage_CreateInstance(t *testing.T) {
 	}
 }
 
+// Phase 2.0 Task 0.2 — see ADR-012. Register carries the agent-reported mux
+// session id (advertised back from ssh-proxy after data-plane attach) and
+// Heartbeat carries the running agent version for operational visibility.
+func TestPhase2RegisterMuxSessionID(t *testing.T) {
+	t.Parallel()
+
+	orig := &agentv1.Register{
+		NodeName:     "dev-node-01",
+		AgentVersion: "0.2.0",
+		AgentToken:   "dev-token",
+		MuxSessionId: "mux-7ab3",
+	}
+	raw, err := proto.Marshal(orig)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	got := &agentv1.Register{}
+	if err := proto.Unmarshal(raw, got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.MuxSessionId != "mux-7ab3" {
+		t.Fatalf("MuxSessionId: got %q, want %q", got.MuxSessionId, "mux-7ab3")
+	}
+}
+
+func TestPhase2HeartbeatAgentVersion(t *testing.T) {
+	t.Parallel()
+
+	orig := &agentv1.Heartbeat{
+		NodeId:       "11111111-1111-1111-1111-111111111111",
+		AgentVersion: "0.2.0",
+	}
+	raw, err := proto.Marshal(orig)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	got := &agentv1.Heartbeat{}
+	if err := proto.Unmarshal(raw, got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.AgentVersion != "0.2.0" {
+		t.Fatalf("AgentVersion: got %q, want %q", got.AgentVersion, "0.2.0")
+	}
+}
+
 func TestInstanceStatusTimestamp(t *testing.T) {
 	t.Parallel()
 

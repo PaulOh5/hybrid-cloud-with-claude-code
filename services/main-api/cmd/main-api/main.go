@@ -23,6 +23,7 @@ import (
 	"github.com/pressly/goose/v3"
 	"google.golang.org/grpc"
 
+	"hybridcloud/services/main-api/internal/agentauth"
 	"hybridcloud/services/main-api/internal/api"
 	"hybridcloud/services/main-api/internal/auth"
 	"hybridcloud/services/main-api/internal/billing"
@@ -151,14 +152,24 @@ func main() {
 			log.Error("ticket signer", "err", err)
 			os.Exit(2)
 		}
+		// Phase 2 ADR-009 — ssh-proxy validates agent (node_id, token) at
+		// mux handshake time by posting to /internal/agent-auth. Backed by
+		// node_tokens (Phase 2 Task 0.3) with a 60s in-memory cache so
+		// revocation surfaces within the cache TTL window (S2).
+		agentAuth := agentauth.NewHandler(agentauth.Config{
+			Repo:     agentauth.NewPgRepo(queries),
+			CacheTTL: 60 * time.Second,
+		})
+
 		internalRouter = api.NewInternalRouter(api.SSHTicketDeps{
 			Instances: instances,
 			Nodes:     nodes,
 			Registry:  registry,
 			Signer:    signer,
 			SSHKeys:   sshKeysRepo,
-		}, cfg.InternalToken)
+		}, agentAuth, cfg.InternalToken)
 		log.Info("ssh-ticket endpoint enabled", "ttl", cfg.TicketTTL)
+		log.Info("agent-auth endpoint enabled", "cache_ttl", "60s")
 	}
 
 	// User-facing /api/v1/* router (Phase 7).

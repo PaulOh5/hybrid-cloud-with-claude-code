@@ -92,6 +92,10 @@ func (r *AgentRegistry) Connected(nodeID uuid.UUID) bool {
 
 // TunnelEndpoint returns the tunnel address the agent advertised at Register
 // time, or ("", false) when the node is not connected or did not advertise.
+//
+// TODO(Phase 2.2): remove. ssh-proxy resolves node_id -> stream via its own
+// muxregistry under ADR-008/012; main-api will stop carrying a tunnel address
+// once Phase 2.2 lands.
 func (r *AgentRegistry) TunnelEndpoint(nodeID uuid.UUID) (string, bool) {
 	r.mu.RLock()
 	entry, ok := r.nodes[nodeID]

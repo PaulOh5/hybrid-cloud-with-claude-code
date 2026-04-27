@@ -130,6 +130,9 @@ func (s *AgentStreamService) Stream(stream agentv1.AgentService_StreamServer) er
 	var cleanupRegistry func()
 	sendCh := make(chan *agentv1.ControlMessage, s.sendBuffer())
 	if s.Registry != nil {
+		// TODO(Phase 2.2): replace AgentTunnelEndpoint with muxregistry lookup —
+		// see ADR-012. ssh-proxy will resolve node_id -> stream via its own
+		// muxregistry, not via the registry's TunnelEndpoint helper.
 		cleanupRegistry = s.Registry.Register(n.ID, sendCh, reg.AgentTunnelEndpoint)
 	} else {
 		cleanupRegistry = func() {}
