@@ -9,10 +9,14 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
+	"github.com/hashicorp/yamux"
+
 	"hybridcloud/services/compute-agent/internal/libvirt"
+	"hybridcloud/services/compute-agent/internal/muxclient"
 	"hybridcloud/services/compute-agent/internal/profile"
 	"hybridcloud/services/compute-agent/internal/stream"
 	"hybridcloud/services/compute-agent/internal/topology"
@@ -38,6 +42,13 @@ func main() {
 		netName      = flag.String("network", env("AGENT_LIBVIRT_NETWORK", "default"), "libvirt network to attach VMs to")
 		diskGB       = flag.Int("disk-gb", envInt("AGENT_DISK_GB", 50), "per-VM virtual disk size in GiB (cloud-init growpart fills it on boot)")
 		profilePath  = flag.String("profile", env("AGENT_PROFILE", ""), "path to slot-layout YAML (see docs/specs/phase-1-mvp.md §GPU partitioning)")
+
+		// Phase 2.2 — outbound mux endpoint at ssh-proxy. Empty disables the
+		// data-plane entirely so dev/test bring-up still works without a
+		// running mux server.
+		muxEndpoint   = flag.String("mux-endpoint", env("AGENT_MUX_ENDPOINT", ""), "ssh-proxy mux endpoint host:port (e.g. mux.qlaud.net:8443). Empty disables data plane.")
+		muxServerName = flag.String("mux-server-name", env("AGENT_MUX_SERVER_NAME", ""), "TLS SNI for the mux endpoint. Defaults to host portion of --mux-endpoint.")
+		muxInsecure   = flag.Bool("mux-insecure", env("AGENT_MUX_INSECURE", "") == "1", "DEV ONLY: skip TLS verification on the mux endpoint")
 	)
 	flag.Parse()
 
@@ -105,7 +116,16 @@ func main() {
 		onControl = vmHandler.OnControl
 	}
 
-	client, err := stream.New(stream.Config{
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
+	// Phase 2.2 — boot muxclient once main-api hands us a node_id. The
+	// closure runs synchronously inside stream.runOnce after RegisterAck;
+	// sync.Once gates a single muxclient.Run goroutine even though stream
+	// reconnects re-fire the callback.
+	var muxOnce sync.Once
+	var muxWG sync.WaitGroup
+	streamCfg := stream.Config{
 		Endpoint:     *endpoint,
 		NodeName:     *nodeName,
 		Hostname:     hostname,
@@ -114,18 +134,35 @@ func main() {
 		Topology:     collector,
 		OnControl:    onControl,
 		Log:          log,
-	})
+	}
+	if *muxEndpoint != "" {
+		streamCfg.OnRegistered = func(nodeID string) {
+			muxOnce.Do(func() {
+				startMuxclient(ctx, log, &muxWG, muxParams{
+					endpoint:     *muxEndpoint,
+					serverName:   *muxServerName,
+					insecure:     *muxInsecure,
+					nodeID:       nodeID,
+					agentToken:   *token,
+					agentVersion: *agentVersion,
+				})
+			})
+		}
+		log.Info("mux endpoint configured", "endpoint", *muxEndpoint)
+	} else {
+		log.Info("mux endpoint disabled (AGENT_MUX_ENDPOINT unset) — Phase 1 SSH path inoperable")
+	}
+
+	client, err := stream.New(streamCfg)
 	if err != nil {
 		log.Error("stream.New", "err", err)
 		os.Exit(2)
 	}
 
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer cancel()
-
 	log.Info("compute-agent starting", "endpoint", *endpoint, "node_name", *nodeName, "vms_disabled", *disableVMs)
 
 	runErr := client.Run(ctx)
+	muxWG.Wait()
 
 	// SIGTERM grace: the stream is gone but the VM handler may still be
 	// running qemu-img / libvirt destroy / GPU reset for an in-flight
@@ -143,6 +180,43 @@ func main() {
 		os.Exit(1)
 	}
 	log.Info("compute-agent shut down")
+}
+
+type muxParams struct {
+	endpoint     string
+	serverName   string
+	insecure     bool
+	nodeID       string
+	agentToken   string
+	agentVersion string
+}
+
+// startMuxclient runs the agent's outbound mux session against ssh-proxy.
+// muxclient.Run blocks for the lifetime of ctx, so it runs on its own
+// goroutine and the caller waits on muxWG at shutdown. OnAttach hands
+// the freshly attached yamux session to the per-stream Handler so user
+// SSH bytes can flow.
+func startMuxclient(ctx context.Context, log *slog.Logger, wg *sync.WaitGroup, p muxParams) {
+	handler := &muxclient.Handler{Log: log}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		err := muxclient.Run(ctx, muxclient.Config{
+			Endpoint:           p.endpoint,
+			ServerName:         p.serverName,
+			NodeID:             p.nodeID,
+			AgentToken:         p.agentToken,
+			AgentVersion:       p.agentVersion,
+			InsecureSkipVerify: p.insecure,
+			Log:                log,
+			OnAttach: func(sess *yamux.Session) {
+				go handler.AcceptLoop(ctx, sess)
+			},
+		})
+		if err != nil && err != context.Canceled {
+			log.Error("muxclient exited", "err", err)
+		}
+	}()
 }
 
 func env(key, fallback string) string {

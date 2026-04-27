@@ -21,8 +21,12 @@ import (
 type SSHTicketDeps struct {
 	Instances InstanceRepo
 	Nodes     NodeGetter
-	Registry  TunnelRegistry
-	Signer    *sshticket.Signer
+	// Registry is retained for v1.x callers but no longer consulted by
+	// the handler — Phase 2 (ADR-012) routes via ssh-proxy's mux
+	// registry keyed by ticket.NodeID. Field stays in case future
+	// internal endpoints reuse the same struct.
+	Registry TunnelRegistry
+	Signer   *sshticket.Signer
 	// SSHKeys resolves the client's SHA-256 SSH key fingerprint (presented to
 	// ssh-proxy at handshake) to the owning user. Required for owner
 	// scoping; nil leaves the gate disabled, which production boot must
@@ -143,19 +147,16 @@ func SSHTicketHandler(deps SSHTicketDeps) http.HandlerFunc {
 			return
 		}
 
-		tunnelEndpoint, ok := deps.Registry.TunnelEndpoint(node.ID)
-		if !ok {
-			writeError(w, http.StatusConflict, "no_tunnel_endpoint",
-				"agent has not advertised a tunnel endpoint")
-			return
-		}
-
+		// Phase 2 (Task 2.1, ADR-012): the handler no longer asks the
+		// gRPC registry for an advertised dial address — ssh-proxy
+		// reaches the agent over its mux session keyed by NodeID. The
+		// TunnelEndpoint field stays in the Ticket for v1.x JSON shape
+		// compatibility but is always empty.
 		signed, err := deps.Signer.Issue(sshticket.Ticket{
-			InstanceID:     inst.ID,
-			NodeID:         node.ID,
-			VMInternalIP:   inst.VmInternalIp.String(),
-			VMPort:         22,
-			TunnelEndpoint: tunnelEndpoint,
+			InstanceID:   inst.ID,
+			NodeID:       node.ID,
+			VMInternalIP: inst.VmInternalIp.String(),
+			VMPort:       22,
 		})
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "sign", err.Error())

@@ -61,15 +61,42 @@ func main() {
 		"fingerprint", ssh.FingerprintSHA256(signer.PublicKey()),
 	)
 
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
+	// Phase 2.1 — mux endpoint + Prometheus exposure are opt-in. When
+	// SSH_PROXY_MUX_LISTEN is set we also stand up the metrics listener
+	// (no metrics to scrape without it). The mux registry is required
+	// before building the user-facing SSH handler because Phase 2.2
+	// relays user SSH bytes onto the mux session.
+	promReg := prometheus.NewRegistry()
+	var wg sync.WaitGroup
+	registry := startMuxIfConfigured(ctx, &wg, log, promReg, muxConfig{
+		listen:      *muxListen,
+		certPath:    *muxCertPath,
+		keyPath:     *muxKeyPath,
+		apiBaseURL:  *apiBaseURL,
+		internalTok: *internalTok,
+	})
+	startMetricsIfConfigured(ctx, &wg, log, promReg, *metricsListen)
+
 	var handler server.Handler = server.DenyHandler{Reason: "internal token not configured"}
 	if *internalTok != "" {
+		if registry == nil {
+			log.Error("Phase 2.2 user SSH relay requires SSH_PROXY_MUX_LISTEN to be set so the mux registry exists")
+			os.Exit(2)
+		}
 		client := ticketclient.New(*apiBaseURL, *internalTok)
+		relayer := &tunnelhandler.Relayer{
+			Opener: muxStreamOpener{reg: registry},
+			Log:    log,
+		}
 		handler = &tunnelhandler.Handler{
 			Tickets:     client,
-			AfterTicket: tunnelhandler.Relay,
+			AfterTicket: relayer.Relay,
 			Log:         log,
 		}
-		log.Info("ticket client + relay configured", "api", *apiBaseURL)
+		log.Info("ticket client + mux relayer configured", "api", *apiBaseURL)
 	}
 
 	srv, err := server.New(server.Config{
@@ -88,23 +115,6 @@ func main() {
 		log.Error("listen", "addr", *listen, "err", err)
 		os.Exit(1)
 	}
-
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer cancel()
-
-	// Phase 2.1 — mux endpoint + Prometheus exposure are opt-in. When
-	// SSH_PROXY_MUX_LISTEN is set we also stand up the metrics listener
-	// (no metrics to scrape without it).
-	promReg := prometheus.NewRegistry()
-	var wg sync.WaitGroup
-	registry := startMuxIfConfigured(ctx, &wg, log, promReg, muxConfig{
-		listen:      *muxListen,
-		certPath:    *muxCertPath,
-		keyPath:     *muxKeyPath,
-		apiBaseURL:  *apiBaseURL,
-		internalTok: *internalTok,
-	})
-	startMetricsIfConfigured(ctx, &wg, log, promReg, *metricsListen)
 
 	log.Info("ssh-proxy listening", "addr", *listen, "zone", *zone)
 	if err := srv.Serve(ctx, lis); err != nil && err != context.Canceled {
@@ -125,6 +135,15 @@ type muxConfig struct {
 	keyPath     string
 	apiBaseURL  string
 	internalTok string
+}
+
+// muxStreamOpener adapts *muxregistry.Registry to tunnelhandler.StreamOpener.
+// muxregistry returns *yamux.Stream (which implements net.Conn); this thin
+// wrapper widens the return type so tunnelhandler stays free of yamux deps.
+type muxStreamOpener struct{ reg *muxregistry.Registry }
+
+func (o muxStreamOpener) OpenStream(ctx context.Context, nodeID string) (net.Conn, error) {
+	return o.reg.OpenStream(ctx, nodeID)
 }
 
 func startMuxIfConfigured(

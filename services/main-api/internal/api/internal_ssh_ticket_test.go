@@ -136,8 +136,57 @@ func TestSSHTicket_Issue(t *testing.T) {
 	if ticket.VMInternalIP != "192.168.122.47" || ticket.VMPort != 22 {
 		t.Fatalf("vm fields: %+v", ticket)
 	}
-	if ticket.TunnelEndpoint != "127.0.0.1:8082" {
-		t.Fatalf("tunnel endpoint: %q", ticket.TunnelEndpoint)
+	// Phase 2 (Task 2.1, ADR-012): TunnelEndpoint is deprecated. The
+	// handler must always emit empty so old clients fail fast with a
+	// clear error rather than dialling a stale advertised address.
+	if ticket.TunnelEndpoint != "" {
+		t.Fatalf("expected empty TunnelEndpoint after Phase 2, got %q", ticket.TunnelEndpoint)
+	}
+	// NodeID is the field ssh-proxy uses to OpenStream; must be populated.
+	if ticket.NodeID != inst.NodeID {
+		t.Fatalf("node id: got %s want %s", ticket.NodeID, inst.NodeID)
+	}
+}
+
+// Phase 2 (Task 2.1): the handler no longer depends on the agent's
+// advertised TunnelEndpoint — Registry may be nil.
+func TestSSHTicket_IssuesWithNilRegistry(t *testing.T) {
+	t.Parallel()
+
+	ownerID := uuid.New()
+	nodeID := uuid.New()
+	instanceID := uuid.New()
+	vmIP := netip.MustParseAddr("192.168.122.47")
+
+	insts := newFakeInstanceRepo()
+	insts.rows[instanceID] = &dbstore.Instance{
+		ID:           instanceID,
+		OwnerID:      uuid.NullUUID{UUID: ownerID, Valid: true},
+		NodeID:       nodeID,
+		State:        dbstore.InstanceStateRunning,
+		VmInternalIp: &vmIP,
+		CreatedAt:    pgtype.Timestamptz{Time: time.Now(), Valid: true},
+	}
+	getter := nodeOnly{nodes: map[uuid.UUID]dbstore.Node{
+		nodeID: {ID: nodeID, Status: dbstore.NodeStatusOnline},
+	}}
+	signer, _ := sshticket.NewSigner(bytes.Repeat([]byte{1}, 32), 15*time.Second)
+	auth := &fakeSSHKeyAuth{users: map[string]uuid.UUID{testFingerprint: ownerID}}
+
+	router := api.NewInternalRouter(api.SSHTicketDeps{
+		Instances: insts,
+		Nodes:     getter,
+		Registry:  nil, // Phase 2: no longer required
+		Signer:    signer,
+		SSHKeys:   auth,
+	}, nil, "secret")
+
+	req := ticketRequest(t, instanceID.String()[:8], testFingerprint)
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: %d; body=%s", rr.Code, rr.Body.String())
 	}
 }
 
