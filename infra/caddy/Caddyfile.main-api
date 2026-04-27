@@ -1,0 +1,63 @@
+# Caddyfile for the main-api VM (hosts qlaud.net apex + www).
+#
+# Runs as system-level Caddy (apt-installed). DNS-01 against Route53 via
+# AWS_* env vars in /etc/systemd/system/caddy.service.d/override.conf
+# (set up by scripts/bootstrap-vm.sh --role main-api).
+#
+# Phase 2 split: this VM does NOT serve *.qlaud.net — that's the
+# ssh-proxy VM (DNS A record points there). Wildcard cert is obtained
+# on the ssh-proxy VM via certbot.
+{
+	email ops@qlaud.net
+
+	# Route53 DNS-01: h20a's firewall rationale ("foreign-IP block")
+	# does not apply to AWS EC2, so technically HTTP-01 would also work
+	# for the apex. We stay on DNS-01 for parity with the ssh-proxy VM
+	# and to keep AWS the only ACME prereq. Renewals don't need :80.
+	acme_dns route53 {
+		max_retries 5
+	}
+}
+
+qlaud.net, www.qlaud.net {
+	encode zstd gzip
+
+	# /internal/* must never be served publicly. ssh-proxy reaches it
+	# via the private LAN (SSH_PROXY_API_ENDPOINT in ssh-proxy VM's
+	# .env.production points at the main-api VM private IP). Returning
+	# 404 here keeps probes from learning the path exists.
+	handle /internal/* {
+		respond "not found" 404
+	}
+
+	# Bearer-token-gated admin endpoints. Caddy passes through; main-api
+	# enforces RequireAdminToken.
+	handle /admin/* {
+		reverse_proxy 127.0.0.1:8080
+	}
+
+	# JSON API consumed by the frontend + admin CLI. main-api owns
+	# RequireUser / session middleware.
+	handle /api/v1/* {
+		reverse_proxy 127.0.0.1:8080
+	}
+
+	# Prometheus scrape endpoint. Restricted to the VM's private IP via
+	# Caddy's matcher — operators can still reach it from inside the
+	# VPC (e.g. a Prometheus scraper VM) but the public internet sees
+	# 404. Adjust the CIDR to match your VPC range if needed.
+	@private remote_ip 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16
+	handle /metrics {
+		@public not remote_ip 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16
+		handle @public {
+			respond "not found" 404
+		}
+		reverse_proxy 127.0.0.1:8080
+	}
+
+	# Everything else → frontend (Next.js standalone). The frontend
+	# rewrites server-side calls to MAIN_API_URL=http://127.0.0.1:8080.
+	handle {
+		reverse_proxy 127.0.0.1:3000
+	}
+}

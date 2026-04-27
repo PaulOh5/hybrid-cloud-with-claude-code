@@ -1,8 +1,17 @@
 name: Deploy
 
-# Manual deploy to the production host (h20a / qlaud.net). Phase 1 has no
-# staging — operator is the gate. The workflow refuses to deploy a SHA whose
-# CI is not green.
+# Manual deploy to the three production targets:
+#   - main-api VM      (qlaud.net apex, EC2)
+#   - ssh-proxy VM     (*.qlaud.net wildcard, EC2)
+#   - h20a             (compute-agent only, GPU host)
+#
+# The build job runs once and uploads a single artifact; the three deploy
+# jobs run in parallel after build + verify-ci pass, each downloading the
+# artifact and pushing the relevant subset to its target.
+#
+# Targets are selectable via the inputs.targets matrix in case the
+# operator wants to deploy only one role (e.g. ssh-proxy hotfix).
+
 on:
   workflow_dispatch:
     inputs:
@@ -15,10 +24,21 @@ on:
         type: boolean
         required: false
         default: false
+      targets:
+        description: "Comma-separated targets: main-api,ssh-proxy,compute-agent (default: all)"
+        required: false
+        default: "main-api,ssh-proxy,compute-agent"
+      skip_external_smoke:
+        description: "Skip the public-URL smoke check (first cutover before DNS switch)"
+        type: boolean
+        required: false
+        default: false
 
 concurrency:
-  group: deploy-prod
-  cancel-in-progress: false  # Never interrupt an in-flight deploy
+  # Per-target concurrency so a main-api hotfix doesn't block an unrelated
+  # ssh-proxy deploy. Each role still serialises against itself.
+  group: deploy-prod-${{ github.event.inputs.targets || 'all' }}
+  cancel-in-progress: false
 
 env:
   GO_VERSION: "1.25"
@@ -36,6 +56,9 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       sha: ${{ steps.resolve.outputs.sha }}
+      deploy_main_api:     ${{ steps.parse.outputs.deploy_main_api }}
+      deploy_ssh_proxy:    ${{ steps.parse.outputs.deploy_ssh_proxy }}
+      deploy_compute_agent: ${{ steps.parse.outputs.deploy_compute_agent }}
     steps:
       - uses: actions/checkout@v6
       - id: resolve
@@ -52,6 +75,20 @@ jobs:
           fi
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
           echo "Deploy target SHA: $sha"
+      - id: parse
+        env:
+          TARGETS: ${{ inputs.targets }}
+        run: |
+          targets="${TARGETS:-main-api,ssh-proxy,compute-agent}"
+          for role in main-api ssh-proxy compute-agent; do
+            key="deploy_$(echo "$role" | tr '-' '_')"
+            if [[ ",$targets," == *",$role,"* ]]; then
+              echo "$key=true"  >> "$GITHUB_OUTPUT"
+            else
+              echo "$key=false" >> "$GITHUB_OUTPUT"
+            fi
+          done
+          echo "Targets resolved: $targets"
 
   verify-ci:
     name: Verify CI green for SHA
@@ -63,11 +100,6 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SHA: ${{ needs.resolve-sha.outputs.sha }}
-        # No checkout in this job, so gh CLI can't infer the repo from a git
-        # remote — pass it explicitly via $GITHUB_REPOSITORY. The retry loop
-        # absorbs the common case where the operator triggers Deploy right
-        # after a push and CI for that SHA is still queued or running. 20×30s
-        # = 10 min cap, which is comfortably above the typical CI duration.
         run: |
           for attempt in $(seq 1 20); do
             status=$(gh run list --workflow=ci.yml --commit "$SHA" \
@@ -92,8 +124,6 @@ jobs:
   build:
     name: Build artifacts
     needs: [resolve-sha, verify-ci]
-    # `if: always()` lets the build run when verify-ci was skipped via input,
-    # but only if its predecessors did not actually fail.
     if: ${{ always() && needs.resolve-sha.result == 'success' && (needs.verify-ci.result == 'success' || needs.verify-ci.result == 'skipped') }}
     runs-on: ubuntu-latest
     steps:
@@ -116,6 +146,8 @@ jobs:
           go build -trimpath -ldflags="-s -w -X main.commit=${{ needs.resolve-sha.outputs.sha }}" \
             -o dist/main-api      ./services/main-api/cmd/main-api
           go build -trimpath -ldflags="-s -w -X main.commit=${{ needs.resolve-sha.outputs.sha }}" \
+            -o dist/admin         ./services/main-api/cmd/admin
+          go build -trimpath -ldflags="-s -w -X main.commit=${{ needs.resolve-sha.outputs.sha }}" \
             -o dist/ssh-proxy     ./services/ssh-proxy/cmd/ssh-proxy
           go build -trimpath -ldflags="-s -w -X main.commit=${{ needs.resolve-sha.outputs.sha }}" \
             -o dist/compute-agent ./services/compute-agent/cmd/compute-agent
@@ -130,16 +162,10 @@ jobs:
 
       - name: Build frontend (standalone)
         env:
-          # Same-origin: the browser hits /api/v1/* on the frontend host and
-          # next.config.ts rewrites to MAIN_API_URL server-side.
           MAIN_API_URL: http://127.0.0.1:8080
         run: |
           pnpm install --frozen-lockfile
           (cd web/frontend && pnpm build)
-          # Next.js 16 standalone in a pnpm workspace keeps the monorepo
-          # layout, so server.js lands at .next/standalone/web/frontend/.
-          # static + public must sit next to that server.js — not at the
-          # standalone root, or Next can't find the chunks at runtime.
           mkdir -p dist/frontend
           cp -a web/frontend/.next/standalone/. dist/frontend/
           cp -a web/frontend/.next/static dist/frontend/web/frontend/.next/static
@@ -149,62 +175,177 @@ jobs:
           tar -czf dist/frontend.tar.gz -C dist/frontend .
           rm -rf dist/frontend
 
+      - name: Stage scripts (uploaded with the artifact so each target can self-update)
+        run: |
+          mkdir -p dist/scripts
+          cp scripts/deploy.sh dist/scripts/
+          cp scripts/backup.sh dist/scripts/
+          cp scripts/restore.sh dist/scripts/
+
       - uses: actions/upload-artifact@v7
         with:
           name: deploy-${{ needs.resolve-sha.outputs.sha }}
           path: dist/
           retention-days: 14
 
-  preflight:
-    name: Pre-deploy host validation
-    # Runs on the same self-hosted runner that deploy uses — checks the host
-    # state (env file keys, paths, free space, container health, etc.) so
-    # config drift fails the run BEFORE deploy.sh starts mutating production.
-    needs: resolve-sha
-    runs-on: [self-hosted, h20a, production]
-    environment: production
-    steps:
-      - name: Run preflight.sh
-        run: bash "$HOME/hybrid-cloud/scripts/preflight.sh"
-
-  deploy:
-    name: Deploy to h20a
-    needs: [resolve-sha, build, preflight]
-    # Self-hosted runner runs ON h20a as the `hybrid` user. The host's
-    # public IP is geo-blocked for foreign sources, so SSH from
-    # GitHub-hosted runners isn't possible — outbound from h20a is.
-    runs-on: [self-hosted, h20a, production]
-    environment: production
+  deploy-main-api:
+    name: Deploy main-api VM (qlaud.net)
+    needs: [resolve-sha, build]
+    if: ${{ needs.resolve-sha.outputs.deploy_main_api == 'true' }}
+    runs-on: ubuntu-latest
+    environment: production-main-api
     steps:
       - uses: actions/download-artifact@v4
         with:
           name: deploy-${{ needs.resolve-sha.outputs.sha }}
           path: dist/
 
-      - name: Stage artifacts and run deploy.sh
+      - name: Configure SSH
+        env:
+          SSH_KEY:       ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS:   ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s' "$SSH_KEY" > ~/.ssh/id
+          chmod 600 ~/.ssh/id
+          printf '%s' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: rsync staging + scripts to remote
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          SHA: ${{ needs.resolve-sha.outputs.sha }}
+        run: |
+          STAGING="hybrid-cloud/staging/${SHA:0:12}"
+          ssh -i ~/.ssh/id -p "${DEPLOY_PORT:-22}" "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            "rm -rf ~/${STAGING} && mkdir -p ~/${STAGING}"
+          # main-api role needs: main-api, admin, frontend.tar.gz
+          rsync -e "ssh -i $HOME/.ssh/id -p ${DEPLOY_PORT:-22}" -avz --chmod=u+rwx \
+            dist/main-api dist/admin dist/frontend.tar.gz \
+            "${DEPLOY_USER}@${DEPLOY_HOST}:~/${STAGING}/"
+          # scripts/ may have evolved; keep the host's scripts/ in sync.
+          rsync -e "ssh -i $HOME/.ssh/id -p ${DEPLOY_PORT:-22}" -avz --chmod=u+rwx \
+            dist/scripts/deploy.sh dist/scripts/backup.sh dist/scripts/restore.sh \
+            "${DEPLOY_USER}@${DEPLOY_HOST}:~/hybrid-cloud/scripts/"
+
+      - name: Run deploy.sh on remote
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          SHA: ${{ needs.resolve-sha.outputs.sha }}
+        run: |
+          STAGING="hybrid-cloud/staging/${SHA:0:12}"
+          ssh -i ~/.ssh/id -p "${DEPLOY_PORT:-22}" "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            "bash ~/hybrid-cloud/scripts/deploy.sh --role main-api ~/${STAGING} ${SHA}"
+
+      - name: External smoke (qlaud.net)
+        if: ${{ !inputs.skip_external_smoke }}
+        env:
+          DEPLOY_PUBLIC_URL: ${{ secrets.DEPLOY_PUBLIC_URL }}
+        run: |
+          # Hit /login (frontend) and /api/v1/instances (expects 401) over the
+          # public URL — confirms TLS + Caddy + main-api end-to-end.
+          curl -fsS -o /dev/null "${DEPLOY_PUBLIC_URL}/login"
+          code=$(curl -s -o /dev/null -w '%{http_code}' "${DEPLOY_PUBLIC_URL}/api/v1/instances")
+          [[ "$code" == "401" ]] || { echo "::error::expected 401, got $code"; exit 1; }
+          echo "main-api external smoke OK"
+
+  deploy-ssh-proxy:
+    name: Deploy ssh-proxy VM (*.qlaud.net)
+    needs: [resolve-sha, build]
+    if: ${{ needs.resolve-sha.outputs.deploy_ssh_proxy == 'true' }}
+    runs-on: ubuntu-latest
+    environment: production-ssh-proxy
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: deploy-${{ needs.resolve-sha.outputs.sha }}
+          path: dist/
+
+      - name: Configure SSH
+        env:
+          SSH_KEY:     ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s' "$SSH_KEY" > ~/.ssh/id
+          chmod 600 ~/.ssh/id
+          printf '%s' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: rsync staging + scripts to remote
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          SHA: ${{ needs.resolve-sha.outputs.sha }}
+        run: |
+          STAGING="hybrid-cloud/staging/${SHA:0:12}"
+          ssh -i ~/.ssh/id -p "${DEPLOY_PORT:-22}" "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            "rm -rf ~/${STAGING} && mkdir -p ~/${STAGING}"
+          rsync -e "ssh -i $HOME/.ssh/id -p ${DEPLOY_PORT:-22}" -avz --chmod=u+rwx \
+            dist/ssh-proxy "${DEPLOY_USER}@${DEPLOY_HOST}:~/${STAGING}/"
+          rsync -e "ssh -i $HOME/.ssh/id -p ${DEPLOY_PORT:-22}" -avz --chmod=u+rwx \
+            dist/scripts/deploy.sh \
+            "${DEPLOY_USER}@${DEPLOY_HOST}:~/hybrid-cloud/scripts/"
+
+      - name: Run deploy.sh on remote
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          SHA: ${{ needs.resolve-sha.outputs.sha }}
+        run: |
+          STAGING="hybrid-cloud/staging/${SHA:0:12}"
+          ssh -i ~/.ssh/id -p "${DEPLOY_PORT:-22}" "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            "bash ~/hybrid-cloud/scripts/deploy.sh --role ssh-proxy ~/${STAGING} ${SHA}"
+
+      - name: External smoke (mux.qlaud.net:8443 TLS)
+        if: ${{ !inputs.skip_external_smoke }}
+        env:
+          MUX_HOST:    ${{ secrets.MUX_HOST }}
+          MUX_PORT:    ${{ secrets.MUX_PORT }}
+        run: |
+          # Verify TLS handshake on the mux endpoint — wildcard cert in SAN.
+          host="${MUX_HOST:-mux.qlaud.net}"
+          port="${MUX_PORT:-8443}"
+          out=$(openssl s_client -connect "${host}:${port}" -servername "${host}" </dev/null 2>/dev/null | openssl x509 -noout -ext subjectAltName)
+          echo "$out"
+          echo "$out" | grep -q '\*.qlaud.net' || { echo "::error::wildcard SAN missing"; exit 1; }
+          echo "ssh-proxy external smoke OK"
+
+  deploy-compute-agent:
+    name: Deploy compute-agent (h20a)
+    needs: [resolve-sha, build]
+    if: ${{ needs.resolve-sha.outputs.deploy_compute_agent == 'true' }}
+    # Self-hosted runner ON h20a — preserved from the pre-split layout
+    # because h20a's geo-fence blocks SSH from foreign IPs.
+    runs-on: [self-hosted, h20a, production]
+    environment: production-h20a
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: deploy-${{ needs.resolve-sha.outputs.sha }}
+          path: dist/
+
+      - name: Stage and run deploy.sh
         env:
           SHA: ${{ needs.resolve-sha.outputs.sha }}
         run: |
           STAGING="$HOME/hybrid-cloud/staging/${SHA:0:12}"
           rm -rf "$STAGING"
           mkdir -p "$STAGING"
-          cp dist/main-api dist/ssh-proxy dist/compute-agent dist/frontend.tar.gz "$STAGING/"
-          chmod u+rwx "$STAGING"/main-api "$STAGING"/ssh-proxy "$STAGING"/compute-agent
+          cp dist/compute-agent "$STAGING/"
+          chmod u+rwx "$STAGING/compute-agent"
 
-          # deploy.sh lives in the host checkout (~/hybrid-cloud/scripts/),
-          # not in the runner workspace — keeps the deploy logic stable
-          # across in-flight workflow edits.
-          bash "$HOME/hybrid-cloud/scripts/deploy.sh" "$STAGING" "$SHA"
+          # Keep host scripts in sync with main, in case deploy.sh itself
+          # changed in this commit.
+          cp dist/scripts/deploy.sh "$HOME/hybrid-cloud/scripts/deploy.sh"
+          chmod +x "$HOME/hybrid-cloud/scripts/deploy.sh"
 
-      - name: Local smoke check
-        run: |
-          # Already validated by deploy.sh's per-service smoke; this is a
-          # double-check from outside the deploy script proper, hitting the
-          # same loopback endpoints the script does. External smoke from a
-          # foreign IP is blocked (geo-fence), so we don't attempt it.
-          source "$HOME/hybrid-cloud/.env.production"
-          HTTP_PORT="${MAIN_API_HTTP_ADDR##*:}"
-          curl -fsS -o /dev/null "http://127.0.0.1:${HTTP_PORT}/metrics"
-          code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${HTTP_PORT}/api/v1/instances")
-          [[ "$code" == "401" ]] || { echo "::error::expected 401, got $code"; exit 1; }
-          echo "smoke OK"
+          bash "$HOME/hybrid-cloud/scripts/deploy.sh" --role compute-agent "$STAGING" "$SHA"
