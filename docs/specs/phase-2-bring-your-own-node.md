@@ -236,7 +236,7 @@ Phase 2가 "완료"되려면 **전부** 충족:
 - [ ] **F5. 데이터 평면 단절·복구:** ssh-proxy 측 mux endpoint 재시작 시 agent가 자동 재연결, 새 SSH 요청은 ≤ 30s 내 정상 라우팅. 진행 중 SSH는 끊김 (ADR-010)
 
 ### 비기능 (Non-functional)
-- [ ] **N1. 단일 outbound 제약 충족:** agent 노드의 outbound 연결은 main-api(443) + ssh-proxy mux(443) 두 종류. 다른 outbound 0건 (`ss -tnp` / iptables count 검증)
+- [ ] **N1. 단일 outbound 제약 충족:** agent 노드의 outbound 연결은 main-api(:443) + ssh-proxy mux(:8443) 두 종류. 다른 outbound 0건 (`ss -tnp` / iptables count 검증). `:8443`은 Caddy가 :443을 점유해 ssh-proxy를 별도 외부 포트로 둔 결정 (plan.md P11). 가정망 NAT는 :8443 outbound 일반 허용; 사무실/대기업망에서 차단 가능성은 precheck 스크립트로 사전 점검
 - [ ] **N2. Phase 1 N3 회귀 없음:** mux 흡수 후 동시 100 SSH 세션 부하에서 p95 추가 지연 ≤ 30ms, 드롭 ≤ 0.1% (Phase 1 N3 동일 기준)
 - [ ] **N3. Control/data 분리 입증:** main-api에 SSH 바이트 트래픽 0 — main-api 컨테이너 인터페이스 캡처에 사용자 SSH 페이로드 미관찰 (ADR-008 invariant)
 - [ ] **N4. 한국 가정망 24h 생존:** KT/SKB/LG 가정망 베타 노드 1대 이상에서 두 outbound 연결이 24h 단절 0회 (사용자 병렬 검증, A1)
