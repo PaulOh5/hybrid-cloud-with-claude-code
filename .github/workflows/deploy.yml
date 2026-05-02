@@ -195,7 +195,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: production-main-api
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: deploy-${{ needs.resolve-sha.outputs.sha }}
           path: dist/
@@ -261,7 +261,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: production-ssh-proxy
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: deploy-${{ needs.resolve-sha.outputs.sha }}
           path: dist/
@@ -328,7 +328,7 @@ jobs:
     runs-on: [self-hosted, h20a, production]
     environment: production-h20a
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: deploy-${{ needs.resolve-sha.outputs.sha }}
           path: dist/
